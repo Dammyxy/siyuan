@@ -1161,6 +1161,9 @@ func TestSyncMergeProcessesSymemoAuthorityBeforeStorageGateOpens(t *testing.T) {
 	if count := countGoCall(calls, "symemoSync.finish"); count != 2 {
 		t.Fatalf("processSyncMergeResult has %d guarded SiYuanMemo sync finishes", count)
 	}
+	if count := countGoCall(calls, "syncingStorages.Store"); count != 1 {
+		t.Fatalf("processSyncMergeResult clears the native storage gate %d times", count)
+	}
 	finishCalls := goCallNames(mustGoFunctionBody(t, repositoryFile, "finishSymemoRepositorySync"))
 	if count := countGoCall(finishCalls, "rebuildSymemoAfterSyncMerge"); count != 1 {
 		t.Fatalf("finishSymemoRepositorySync rebuilds SiYuanMemo %d times", count)

@@ -44,8 +44,9 @@ var symemoLogError = func(code string, cause error) {
 }
 
 const (
-	symemoInvalidRequestCode = "invalid-request"
-	symemoInternalErrorCode  = "internal-error"
+	symemoInvalidRequestCode                       = "invalid-request"
+	symemoInternalErrorCode                        = "internal-error"
+	symemoLearningElementUnavailableLanguageNumber = 10000
 )
 
 var symemoSafeMessages = map[string]string{
@@ -72,7 +73,7 @@ var symemoSafeMessages = map[string]string{
 
 func symemoSafeMessage(code string) string {
 	if code == string(symemo.ErrAuthoritativeElementUnavailable) && model.Conf != nil {
-		return model.Conf.Language(325)
+		return model.Conf.Language(symemoLearningElementUnavailableLanguageNumber)
 	}
 	return symemoSafeMessages[code]
 }

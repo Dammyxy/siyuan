@@ -80,8 +80,8 @@ func TestSymemoAuthoritativeElementUnavailableMessageUsesKernelLanguage(t *testi
 	previousConf, previousLangs := model.Conf, util.Langs
 	model.Conf = &model.AppConf{Lang: "symemo-test"}
 	util.Langs = map[string]map[int]string{
-		"symemo-test": {325: "Localized learning Element unavailable."},
-		"en":          {325: "English learning Element unavailable."},
+		"symemo-test": {symemoLearningElementUnavailableLanguageNumber: "Localized learning Element unavailable."},
+		"en":          {symemoLearningElementUnavailableLanguageNumber: "English learning Element unavailable."},
 	}
 	t.Cleanup(func() {
 		model.Conf, util.Langs = previousConf, previousLangs
