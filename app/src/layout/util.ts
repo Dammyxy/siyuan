@@ -33,6 +33,8 @@ import {setStorageVal} from "../protyle/util/compatibility";
 import {adjustDockPadding} from "./dock/util";
 import {setTitle} from "../util/processTitle";
 import {activateQueuedAVLocate, queueAVLocateRequest} from "../protyle/render/av/locate";
+import {ElementTab} from "../symemo/ElementTab";
+import {ensureSingleElementsDock, normalizeSymemoLayoutData, serializeSymemoLayoutData} from "../symemo/layoutState";
 
 const isBuiltInCustomModel = (type: string) => {
     return type === "siyuan-card" || type === "siyuan-database-row";
@@ -284,6 +286,10 @@ const ensureAgentChatDock = (layout: Pick<Config.IUiLayout, "left" | "right" | "
     }
 };
 
+const ensureElementsDock = (layout: Pick<Config.IUiLayout, "left" | "right" | "bottom">) => {
+    ensureSingleElementsDock(layout as unknown as Parameters<typeof ensureSingleElementsDock>[0]);
+};
+
 const initInternalDock = (dockItem: Config.IUILayoutDockTab[]) => {
     dockItem.forEach((existSubItem, index) => {
         if (window.siyuan.isPublish && (existSubItem.type === "inbox" || existSubItem.type === "agentChat")) {
@@ -300,6 +306,7 @@ const initInternalDock = (dockItem: Config.IUILayoutDockTab[]) => {
 
 const JSONToDock = (json: any, app: App) => {
     ensureAgentChatDock(json);
+    ensureElementsDock(json);
     json.left.data.forEach((existItem: Config.IUILayoutDockTab[]) => {
         initInternalDock(existItem);
     });
@@ -393,6 +400,14 @@ export const JSONToCenter = (
             (layout as Tab).headElement.classList.add("item--unupdate");
         }
         (layout as Tab).headElement.setAttribute("data-initdata", JSON.stringify(json));
+    } else if (json.instance === "SymemoElement") {
+        const identity = normalizeSymemoLayoutData(json);
+        if (identity) {
+            if (window.siyuan.config.fileTree.openFilesUseCurrentTab) {
+                (layout as Tab).headElement.classList.add("item--unupdate");
+            }
+            (layout as Tab).headElement.setAttribute("data-initdata", JSON.stringify(identity));
+        }
     } else if (json.instance === "Asset") {
         (layout as Tab).addModel(new Asset({
             app,
@@ -669,6 +684,12 @@ export const layoutToJSON = (layout: Layout | Wnd | Tab | Model, json: any, brea
     } else if (layout instanceof Search) {
         json.instance = "Search";
         json.config = layout.config;
+    } else if (layout instanceof ElementTab) {
+        Object.assign(json, serializeSymemoLayoutData({
+            elementId: layout.elementId,
+            title: layout.parent?.title,
+            icon: layout.parent?.icon,
+        }));
     } else if (layout instanceof Custom) {
         json.instance = "Custom";
         json.customModelType = layout.type;
@@ -847,6 +868,9 @@ export const newModelByInitData = (app: App, tab: Tab, json: any) => {
             editorModel.editor.protyle.element.dataset.databaseRowId = json.databaseRowId;
         }
         model = editorModel;
+    } else if (json.instance === "SymemoElement") {
+        const identity = normalizeSymemoLayoutData(json);
+        if (identity) model = new ElementTab({app, tab, elementId: identity.elementId});
     }
     return model;
 };

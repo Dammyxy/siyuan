@@ -1,8 +1,8 @@
 type TPluginDockPosition = "LeftTop" | "LeftBottom" | "RightTop" | "RightBottom" | "BottomLeft" | "BottomRight"
 type TDockPosition = "Left" | "Right" | "Bottom"
 type TWS = "main" | "filetree" | "protyle" | "backlink" | "bookmark" | "graph" | "outline" | "tag" | "agentChat"
-type TDock = "file" | "outline" | "inbox" | "bookmark" | "tag" | "graph" | "globalGraph" | "backlink" | "agentChat"
-type TTab = "Outline" | "Graph" | "Backlink" | "Asset" | "Editor" | "Search" | "siyuan-card"
+type TDock = "file" | "elements" | "outline" | "inbox" | "bookmark" | "tag" | "graph" | "globalGraph" | "backlink" | "agentChat"
+type TTab = "Outline" | "Graph" | "Backlink" | "Asset" | "Editor" | "Search" | "SymemoElement" | "siyuan-card"
 type TOperation =
     "insert"
     | "restoreCreatedDoc"
@@ -708,6 +708,7 @@ interface ILayoutJSON extends ILayoutOptions {
     action?: TProtyleAction
     icon?: string
     rootId?: string
+    elementId?: string
     databaseRowId?: string
     active?: boolean
     pin?: boolean
@@ -920,6 +921,8 @@ interface IModels {
     asset: import("../asset").Asset[]
     search: import("../search").Search[]
     custom: import("../layout/dock/Custom").Custom[]
+    elements: import("../symemo/Elements").Elements[]
+    elementTabs: import("../symemo/ElementTab").ElementTab[]
 }
 
 interface IMenu {

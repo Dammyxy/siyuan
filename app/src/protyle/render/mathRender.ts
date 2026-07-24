@@ -121,10 +121,10 @@ export const mathRender = (element: Element, cdn = Constants.PROTYLE_CDN, maxWid
                     if (isBlock) {
                         genRenderFrame(mathElement);
                         mathElement.firstElementChild.firstElementChild.setAttribute("contenteditable", "false");
-                        mathElement.firstElementChild.firstElementChild.innerHTML = e.message;
+                        mathElement.firstElementChild.firstElementChild.textContent = e.message;
                         mathElement.firstElementChild.firstElementChild.classList.add("ft__error");
                     } else {
-                        mathElement.innerHTML = e.message;
+                        mathElement.textContent = e.message;
                         mathElement.classList.add("ft__error");
                     }
                 }

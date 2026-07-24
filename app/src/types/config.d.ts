@@ -2011,7 +2011,8 @@ declare namespace Config {
         | IUILayoutTabGraph
         | IUILayoutTabOutline
         | IUILayoutTabTag
-        | IUILayoutTabSearch;
+        | IUILayoutTabSearch
+        | IUILayoutTabSymemoElement;
 
     /**
      * SiYuan panel layout
@@ -2090,7 +2091,7 @@ declare namespace Config {
         /**
          * Tab content
          */
-        children: (IUILayoutTabAsset | IUILayoutTabBacklink | IUILayoutTabCustom | IUILayoutTabEditor)[];
+        children: (IUILayoutTabAsset | IUILayoutTabBacklink | IUILayoutTabCustom | IUILayoutTabEditor | IUILayoutTabSymemoElement)[];
         /**
          * Tab icon
          */
@@ -2245,6 +2246,13 @@ declare namespace Config {
          * Object name
          */
         instance: "Files";
+    }
+
+    export interface IUILayoutTabSymemoElement {
+        instance: "SymemoElement";
+        elementId: string;
+        title?: string;
+        icon?: string;
     }
 
 

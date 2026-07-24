@@ -1,0 +1,84 @@
+.symemo-elements,
+.symemo-element-tab {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.symemo-elements {
+  .block__logo {
+    align-items: center;
+    display: flex;
+    gap: 6px;
+    min-width: 0;
+
+    svg {
+      height: 14px;
+      width: 14px;
+    }
+  }
+
+  &__body {
+    min-height: 0;
+    overflow: auto;
+  }
+
+  &__status {
+    padding: 16px;
+  }
+
+  .b3-list-item__text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.symemo-element-tab {
+  &__viewport {
+    min-height: 0;
+    min-width: 0;
+    overflow: auto;
+  }
+
+  &__content {
+    box-sizing: border-box;
+    margin: 0 auto;
+    max-width: 880px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    padding: 32px clamp(20px, 5vw, 64px) 64px;
+
+    img,
+    video,
+    audio {
+      max-width: 100%;
+    }
+
+    table,
+    pre,
+    code,
+    .katex,
+    .katex-display {
+      max-width: 100%;
+      overflow-x: auto;
+    }
+  }
+
+  &__status {
+    align-items: center;
+    box-sizing: border-box;
+    gap: 12px;
+    justify-content: center;
+    min-height: 160px;
+    padding: 24px;
+    text-align: center;
+  }
+
+  &__status-title {
+    color: var(--b3-theme-on-background);
+    font-size: 18px;
+    font-weight: 600;
+  }
+}

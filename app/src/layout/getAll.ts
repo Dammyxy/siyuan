@@ -13,6 +13,8 @@ import {Bookmark} from "./dock/Bookmark";
 import {Tag} from "./dock/Tag";
 import {Custom} from "./dock/Custom";
 import {Wnd} from "./Wnd";
+import {Elements} from "../symemo/Elements";
+import {ElementTab} from "../symemo/ElementTab";
 /// #endif
 
 export const getAllEditor = () => {
@@ -72,6 +74,8 @@ export const getAllModels = () => {
         bookmark: [],
         tag: [],
         custom: [],
+        elements: [],
+        elementTabs: [],
     };
     /// #if !MOBILE
     const getTabs = (layout: Layout) => {
@@ -99,6 +103,10 @@ export const getAllModels = () => {
                     models.tag.push(model);
                 } else if (model instanceof Custom) {
                     models.custom.push(model);
+                } else if (model instanceof Elements) {
+                    models.elements.push(model);
+                } else if (model instanceof ElementTab) {
+                    models.elementTabs.push(model);
                 }
             } else {
                 getTabs(item as Layout);
@@ -155,6 +163,8 @@ export const getAllTabs = (type?: TTab | string) => {
                 } else if (model instanceof Outline && type === "Outline") {
                     tabs.push(item);
                 } else if (model instanceof Custom && model.type === type) {
+                    tabs.push(item);
+                } else if (model instanceof ElementTab && type === "SymemoElement") {
                     tabs.push(item);
                 }
                 continue;

@@ -177,6 +177,7 @@ export abstract class Constants {
     public static readonly LOCAL_MOVE_PATH = "local-move-path";
     public static readonly LOCAL_RECENT_DOCS = "local-recent-docs";
     public static readonly LOCAL_CLOSED_TABS = "local-closed-tabs";
+    public static readonly LOCAL_SYMEMO_ELEMENTS_EXPANDED = "local-symemo-elements-expanded";
 
     // dialog
     public static readonly DIALOG_CONFIRM = "dialog-confirm";
@@ -706,6 +707,12 @@ export abstract class Constants {
                     show: true,
                     icon: "iconFiles",
                     hotkeyLangId: "fileTree",
+                }, {
+                    type: "elements",
+                    size: {width: 232, height: 0},
+                    show: false,
+                    icon: "iconListTree",
+                    hotkeyLangId: "symemoElements",
                 }, {
                     type: "outline",
                     size: {width: 232, height: 0},
