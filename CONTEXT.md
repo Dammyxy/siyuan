@@ -66,6 +66,18 @@ _Avoid_: Weight, score
 
 ## Learning operations
 
+**Learning Session**:
+A locally active learning sequence that presents one Active Learning Target at a time and advances only after the target-native learning action is accepted.
+_Avoid_: Queue, review tab
+
+**Active Learning Target**:
+The Element currently authorized to receive its schedule-changing native action within a Learning Session.
+_Avoid_: Open Element, selected Element
+
+**Previewed Element**:
+An Element viewed while another Active Learning Target remains current; viewing or navigating it is schedule-neutral.
+_Avoid_: Current target, reviewed Element
+
 **Repetition**:
 An accepted schedule-changing processing of an Element through its target-native learning action.
 _Avoid_: Navigation, drill

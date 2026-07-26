@@ -3,9 +3,13 @@ import {openLink} from "../editor/openLink";
 import {Model} from "../layout/Model";
 import type {Tab} from "../layout/Tab";
 import {mathRender} from "../protyle/render/mathRender";
-import {getElement} from "./api";
+import {genUUID} from "../util/genID";
+import {getCurrentLearningSession, getElement, nextTopic, startLearning, stopLearning} from "./api";
 import {ContentSurfaceHost, getContentSurfaceDecision} from "./ContentSurfaceHost";
 import {openElement} from "./openElement";
+import {TOPIC_HTML_CLEANING_POLICY} from "./renderEligibility";
+import {TopicLearningControls, TopicLearningControlIntent} from "./TopicLearningControls";
+import {TopicLearningCoordinator} from "./topicLearning";
 import {TopicHtmlSurface} from "./TopicHtmlSurface";
 import {registerWindowAuthoringParticipant} from "./authoringRegistry";
 import {elementTypeIcon, getElementDisplayTitle} from "./treeState";
@@ -108,6 +112,11 @@ export const handleReaderLinkClick = (
 
 const language = (key: string): string => window.siyuan?.languages?.[key] || "";
 
+const isSupportedLearningTopic = (detail: ElementDetailView): boolean =>
+    detail.type === "topic" && detail.sourceMode === "html" && detail.supportStatus === "supported" &&
+    detail.topicMaterial?.kind === "html" &&
+    detail.topicMaterial.cleaningPolicyVersion === TOPIC_HTML_CLEANING_POLICY;
+
 const unavailableLanguageKey: Record<RendererUnavailableReason, string> = {
     unsupportedRead: "symemoUnsupportedRead",
     unsupportedElementType: "symemoUnsupportedElementType",
@@ -123,13 +132,21 @@ export class ElementTab extends Model {
     public readerElement?: HTMLElement;
     private readonly tab: Tab;
     private readonly panelElement: HTMLElement;
+    private readonly contentElement: HTMLElement;
+    private readonly controlsElement: HTMLElement;
     private readonly surfaceHost: ContentSurfaceHost;
+    private readonly learningControls: TopicLearningControls;
+    private learningCoordinator?: TopicLearningCoordinator;
     private unregisterAuthoring?: () => void;
     private requestGeneration = 0;
     private requesting = false;
     private windowBarrierActive = false;
     private replacementReadyWhenUnblocked = false;
     private pendingMount?: {detail: ElementDetailView; generation: number};
+    private disposed = false;
+    private detailKnown = false;
+    private supportedTopic = false;
+    private learningUnavailable = false;
 
     constructor(options: {app: App; tab: Tab; elementId: string}) {
         super({app: options.app});
@@ -137,10 +154,19 @@ export class ElementTab extends Model {
         this.panelElement = options.tab.panelElement;
         this.elementId = options.elementId;
         this.panelElement.classList.add("symemo-element-tab", "fn__flex", "fn__flex-column");
+        this.panelElement.replaceChildren();
+        this.contentElement = document.createElement("div");
+        this.contentElement.className = "symemo-element-tab__surface fn__flex-1";
+        this.controlsElement = document.createElement("div");
+        this.panelElement.append(this.contentElement, this.controlsElement);
+        this.learningControls = new TopicLearningControls({
+            container: this.controlsElement,
+            onIntent: (intent) => this.handleLearningIntent(intent),
+        });
         this.surfaceHost = new ContentSurfaceHost({
-            container: this.panelElement,
+            container: this.contentElement,
             createWritableSurface: () => new TopicHtmlSurface({
-                container: this.panelElement,
+                container: this.contentElement,
                 onSaveAsNew: (elementId) => {
                     void openElement({
                         app: this.app,
@@ -160,14 +186,47 @@ export class ElementTab extends Model {
                 id: `symemo-element:${this.tab.id}:${this.elementId}`,
                 prepareTransition: (reason) => this.prepareTransition(reason),
                 setWindowBarrier: (active) => this.setWindowBarrier(active),
-                cleanup: () => this.surfaceHost.destroy(),
+                cleanup: () => this.cleanup(),
             });
         } catch (_) {
             this.windowBarrierActive = true;
             this.setReplacementReady(false);
             this.renderStatus(language("symemoRendererUnavailable") || language("symemoElementLoadFailed"));
+            this.learningControls.render({
+                phase: "failure",
+                busy: false,
+                messageKey: "symemoLearningUnavailable",
+                displayedElementId: this.elementId,
+            });
             return;
         }
+        this.learningCoordinator = new TopicLearningCoordinator({
+            displayedElementId: this.elementId,
+            getDisplayedEligibility: () => ({
+                known: this.detailKnown && !this.disposed && this.panelElement.isConnected,
+                supportedTopic: this.supportedTopic && !this.disposed && this.panelElement.isConnected,
+                readOnly: window.siyuan?.config?.readonly === true,
+                barrierActive: this.windowBarrierActive,
+                unavailable: this.learningUnavailable,
+            }),
+            prepareTransition: () => this.prepareTransition("target-change"),
+            getCurrent: getCurrentLearningSession,
+            start: startLearning,
+            stop: stopLearning,
+            next: nextTopic,
+            createEventId: genUUID,
+            followTarget: async (elementId) => {
+                if (this.disposed || !this.panelElement.isConnected || this.windowBarrierActive) return false;
+                const followed = Boolean(await openElement({
+                    app: this.app,
+                    elementId,
+                    intent: "current",
+                    source: "other",
+                }));
+                return followed && !this.disposed && this.panelElement.isConnected;
+            },
+            publish: (projection) => this.learningControls.render(projection),
+        });
         this.panelElement.addEventListener("click", (event: MouseEvent) => {
             if (this.readerElement) {
                 handleReaderLinkClick(this.app, this.readerElement, event);
@@ -177,7 +236,7 @@ export class ElementTab extends Model {
     }
 
     public async load(): Promise<void> {
-        if (this.requesting) {
+        if (this.requesting || this.disposed) {
             return;
         }
         this.requesting = true;
@@ -185,19 +244,26 @@ export class ElementTab extends Model {
         this.pendingMount = undefined;
         this.setReplacementReady(false);
         this.state = {phase: "loading"};
+        this.detailKnown = false;
+        this.supportedTopic = false;
+        this.learningUnavailable = false;
+        this.learningCoordinator?.reproject();
         this.renderStatus(language("loading"));
         const result = await getElement(this.elementId);
         this.requesting = false;
-        if (generation !== this.requestGeneration || !this.panelElement.isConnected) {
+        if (this.disposed || generation !== this.requestGeneration || !this.panelElement.isConnected) {
             return;
         }
         this.state = deriveElementTabState(result);
+        this.detailKnown = true;
         if (this.state.phase === "missing") {
             this.renderStatus(language("symemoElementMissing"), true);
             this.setReplacementReady(true);
+            this.learningCoordinator?.reproject();
         } else if (this.state.phase === "failure") {
             this.renderStatus(language("symemoElementLoadFailed"), true);
             this.setReplacementReady(true);
+            this.learningCoordinator?.reproject();
         } else if (this.state.phase === "renderedTopic") {
             this.updateSafeIdentity(this.state.detail);
             await this.mountWhenAvailable(this.state.detail, generation);
@@ -216,8 +282,12 @@ export class ElementTab extends Model {
     }
 
     public setWindowBarrier(active: boolean): void {
+        if (this.disposed) {
+            return;
+        }
         this.windowBarrierActive = active;
         this.surfaceHost.setWindowBarrier(active);
+        this.learningCoordinator?.reproject();
         this.projectReplacementReady();
         if (!active && this.pendingMount) {
             const pending = this.pendingMount;
@@ -226,11 +296,26 @@ export class ElementTab extends Model {
         }
     }
 
-    public destroy(): void {
+    public cleanup(): void {
+        if (this.disposed) {
+            return;
+        }
+        this.disposed = true;
+        this.requestGeneration++;
+        this.requesting = false;
+        this.learningCoordinator?.destroy();
+        this.learningCoordinator = undefined;
         this.unregisterAuthoring?.();
         this.unregisterAuthoring = undefined;
         this.pendingMount = undefined;
+        this.readerElement = undefined;
         this.surfaceHost.destroy();
+        this.learningControls.destroy();
+        this.panelElement.replaceChildren();
+    }
+
+    public destroy(): void {
+        this.cleanup();
     }
 
     public focus(): void {
@@ -262,40 +347,50 @@ export class ElementTab extends Model {
     }
 
     private async mountWhenAvailable(detail: ElementDetailView, generation: number): Promise<void> {
-        if (generation !== this.requestGeneration || !this.panelElement.isConnected) {
+        if (this.disposed || generation !== this.requestGeneration || !this.panelElement.isConnected) {
             return;
         }
         if (this.windowBarrierActive) {
             this.pendingMount = {detail, generation};
             return;
         }
+        const decision = getContentSurfaceDecision(detail);
         try {
             await this.surfaceHost.mount(detail);
         } catch (_) {
-            if (generation !== this.requestGeneration || !this.panelElement.isConnected) {
+            if (this.disposed || generation !== this.requestGeneration || !this.panelElement.isConnected) {
                 return;
             }
             this.state = {phase: "failure", errorKind: "response"};
             this.renderStatus(language("symemoElementLoadFailed"), true);
             this.setReplacementReady(true);
+            this.supportedTopic = false;
+            this.learningUnavailable = true;
+            this.learningCoordinator?.reproject();
             return;
         }
-        if (generation !== this.requestGeneration || this.windowBarrierActive || !this.panelElement.isConnected) {
+        if (this.disposed || generation !== this.requestGeneration || !this.panelElement.isConnected) {
             return;
         }
-        if (getContentSurfaceDecision(detail).kind !== "writableTopic") {
+        this.supportedTopic = isSupportedLearningTopic(detail);
+        this.learningUnavailable = false;
+        this.learningCoordinator?.reproject();
+        if (this.windowBarrierActive) {
+            return;
+        }
+        if (decision.kind !== "writableTopic") {
             this.setReplacementReady(true);
         }
     }
 
     private renderTopic(html: string): void {
-        this.panelElement.replaceChildren();
+        this.contentElement.replaceChildren();
         const viewport = document.createElement("div");
         viewport.className = "symemo-element-tab__viewport fn__flex-1";
         const content = document.createElement("div");
         content.className = "symemo-element-tab__content b3-typography";
         viewport.append(content);
-        this.panelElement.append(viewport);
+        this.contentElement.append(viewport);
         this.readerElement = content;
         viewport.scrollTop = 0;
         renderReadOnlyTopic(content, html);
@@ -303,7 +398,7 @@ export class ElementTab extends Model {
 
     private renderUnavailable(detail: ElementDetailView, reason: RendererUnavailableReason): void {
         this.readerElement = undefined;
-        this.panelElement.replaceChildren();
+        this.contentElement.replaceChildren();
         const status = document.createElement("div");
         status.className = "symemo-element-tab__status fn__flex-column";
         const title = document.createElement("div");
@@ -313,13 +408,13 @@ export class ElementTab extends Model {
         message.className = "b3-label__text";
         message.textContent = language(unavailableLanguageKey[reason]) || language("symemoRendererUnavailable");
         status.append(title, message);
-        this.panelElement.append(status);
+        this.contentElement.append(status);
     }
 
     private renderStatus(message: string, retry = false): void {
         this.surfaceHost?.destroy();
         this.readerElement = undefined;
-        this.panelElement.replaceChildren();
+        this.contentElement.replaceChildren();
         const status = document.createElement("div");
         status.className = "symemo-element-tab__status fn__flex-column";
         const text = document.createElement("div");
@@ -333,6 +428,22 @@ export class ElementTab extends Model {
             button.addEventListener("click", () => this.retry());
             status.append(button);
         }
-        this.panelElement.append(status);
+        this.contentElement.append(status);
+    }
+
+    private handleLearningIntent(intent: TopicLearningControlIntent): void {
+        if (intent === "learn") {
+            void this.learningCoordinator?.learn();
+        } else if (intent === "resume") {
+            void this.learningCoordinator?.resume();
+        } else if (intent === "stop") {
+            void this.learningCoordinator?.stop();
+        } else if (intent === "next") {
+            void this.learningCoordinator?.next();
+        } else if (intent === "retryNext") {
+            void this.learningCoordinator?.retryNext();
+        } else if (intent === "continue") {
+            void this.learningCoordinator?.continueNext();
+        }
     }
 }

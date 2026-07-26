@@ -30,6 +30,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/siyuan-note/siyuan/kernel/model"
@@ -304,6 +305,259 @@ func TestSymemoNextTopicTransportUsesElementUnavailableAndQueueAdvanceContracts(
 	if !envelope.Data.ReviewAccepted || envelope.Data.AcceptedEvent != "topic-queue-advance-failed" || envelope.Data.Session == nil || envelope.Data.Session.PendingAcceptedEventID != "topic-queue-advance-failed" {
 		t.Fatalf("Topic queue-advance envelope = %#v", envelope)
 	}
+}
+
+func TestTopicLearningAlphaAPIHappyPath(t *testing.T) {
+	root := t.TempDir()
+	storageRoot := filepath.Join(root, "storage")
+	schedulerRoot := filepath.Join(storageRoot, "scheduler")
+	if err := os.MkdirAll(schedulerRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sourceScheduler := filepath.Join("..", "model", "symemo", "testdata", "scheduler")
+	if err := filepath.WalkDir(sourceScheduler, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(schedulerRoot, entry.Name()), data, 0644)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	location, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, time.July, 1, 12, 0, 0, 0, location)
+	engine, err := symemo.NewEngine(t.Context(), symemo.Config{
+		StorageRoot:   storageRoot,
+		IndexRoot:     filepath.Join(root, "index"),
+		SchedulerRoot: schedulerRoot,
+		Location:      location,
+		Now:           func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = engine.Close() })
+	created, err := engine.CreateElement(t.Context(), symemo.CreateElementCommand{
+		Kind: symemo.CreateElementAddNewTopic,
+		AddNewTopic: symemo.AddNewTopicCommand{
+			Title: "Topic Learning Alpha",
+			HTML:  "<p>Topic-only material</p>",
+		},
+	})
+	if err != nil || !created.CreateAccepted || !created.ReviewAccepted || created.ElementID == "" {
+		t.Fatalf("create Topic = %#v, err=%v", created, err)
+	}
+	now = time.Date(2026, time.August, 1, 12, 0, 0, 0, location)
+
+	previousBooted := symemoIsBooted
+	previousQuery, previousLearningAction := symemoQuery, symemoRunLearningAction
+	symemoIsBooted = func() bool { return true }
+	symemoQuery = engine.Query
+	symemoRunLearningAction = engine.RunLearningAction
+	t.Cleanup(func() {
+		symemoIsBooted = previousBooted
+		symemoQuery, symemoRunLearningAction = previousQuery, previousLearningAction
+	})
+
+	startResponse := invokeSymemoHandler(t, startSymemoLearning, `{}`)
+	if code := envelopeCode(t, startResponse); code != 0 {
+		t.Fatalf("Start envelope = %s", startResponse.Body.String())
+	}
+	var started symemo.SessionState
+	if err = json.Unmarshal(envelopeData(t, startResponse), &started); err != nil {
+		t.Fatal(err)
+	}
+	if started.Current == nil || started.Current.Kind != "element.topic" || started.Current.ElementID != created.ElementID || started.Phase != symemo.PhaseQuestion {
+		t.Fatalf("Start session = %#v", started)
+	}
+
+	const eventID = "20260801120000-feature007-api-next"
+	nextResponse := invokeSymemoHandler(t, nextSymemoTopic, `{"elementId":"`+created.ElementID+`","eventId":"`+eventID+`"}`)
+	if code := envelopeCode(t, nextResponse); code != 0 {
+		t.Fatalf("Next envelope = %s", nextResponse.Body.String())
+	}
+	var next symemo.LearningResult
+	if err = json.Unmarshal(envelopeData(t, nextResponse), &next); err != nil {
+		t.Fatal(err)
+	}
+	if !next.ReviewAccepted || next.EventID != eventID || next.Session == nil || next.Projection == nil || next.Projection.LastRawGrade != nil || next.Projection.LastPassed != nil {
+		t.Fatalf("Next result = %#v", next)
+	}
+
+	currentResponse := invokeSymemoHandler(t, getSymemoCurrentSession, `{}`)
+	if code := envelopeCode(t, currentResponse); code != 0 || string(envelopeData(t, currentResponse)) != string(mustMarshalJSON(t, next.Session)) {
+		t.Fatalf("Current envelope = %s, Next session = %#v", currentResponse.Body.String(), next.Session)
+	}
+	stopResponse := invokeSymemoHandler(t, stopSymemoLearning, `{}`)
+	if code := envelopeCode(t, stopResponse); code != 0 {
+		t.Fatalf("Stop envelope = %s", stopResponse.Body.String())
+	}
+	var stopped symemo.SessionState
+	if err = json.Unmarshal(envelopeData(t, stopResponse), &stopped); err != nil {
+		t.Fatal(err)
+	}
+	if stopped.Status != symemo.SessionCompleted {
+		t.Fatalf("Stop session = %#v", stopped)
+	}
+}
+
+func TestTopicLearningAlphaReadOnlyAPILeavesAuthorityUnchanged(t *testing.T) {
+	root := t.TempDir()
+	storageRoot := filepath.Join(root, "storage")
+	schedulerRoot := filepath.Join(storageRoot, "scheduler")
+	if err := os.MkdirAll(schedulerRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sourceScheduler := filepath.Join("..", "model", "symemo", "testdata", "scheduler")
+	if err := filepath.WalkDir(sourceScheduler, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		return os.WriteFile(filepath.Join(schedulerRoot, entry.Name()), data, 0644)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	location, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, time.July, 1, 12, 0, 0, 0, location)
+	config := symemo.Config{
+		StorageRoot:   storageRoot,
+		IndexRoot:     filepath.Join(root, "index"),
+		SchedulerRoot: schedulerRoot,
+		Location:      location,
+		Now:           func() time.Time { return now },
+	}
+	writable, err := symemo.NewEngine(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := writable.CreateElement(t.Context(), symemo.CreateElementCommand{
+		Kind:        symemo.CreateElementAddNewTopic,
+		AddNewTopic: symemo.AddNewTopicCommand{Title: "Read-only Topic", HTML: "<p>Material</p>"},
+	})
+	if err != nil || !created.CreateAccepted || !created.ReviewAccepted {
+		_ = writable.Close()
+		t.Fatalf("create Topic = %#v, err=%v", created, err)
+	}
+	if err = writable.Close(); err != nil {
+		t.Fatal(err)
+	}
+	config.ReadOnly = true
+	now = time.Date(2026, time.August, 1, 12, 0, 0, 0, location)
+	engine, err := symemo.NewEngine(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = engine.Close() })
+
+	snapshotAuthority := func() map[string]string {
+		result := map[string]string{}
+		walkErr := filepath.WalkDir(storageRoot, func(path string, entry fs.DirEntry, pathErr error) error {
+			if pathErr != nil {
+				return pathErr
+			}
+			if entry.IsDir() || (filepath.Ext(path) != ".sme" && filepath.Ext(path) != ".smr" && filepath.Ext(path) != ".json") {
+				return nil
+			}
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			relative, relErr := filepath.Rel(storageRoot, path)
+			if relErr != nil {
+				return relErr
+			}
+			result[relative] = string(data)
+			return nil
+		})
+		if walkErr != nil {
+			t.Fatal(walkErr)
+		}
+		return result
+	}
+	before := snapshotAuthority()
+
+	previousBooted := symemoIsBooted
+	previousQuery, previousLearningAction := symemoQuery, symemoRunLearningAction
+	previousReadOnly := util.ReadOnly
+	previousConf, previousLangs := model.Conf, util.Langs
+	symemoIsBooted = func() bool { return true }
+	symemoQuery = engine.Query
+	actionCalls := 0
+	symemoRunLearningAction = func(ctx context.Context, action symemo.LearningAction) (symemo.LearningResult, error) {
+		actionCalls++
+		return engine.RunLearningAction(ctx, action)
+	}
+	util.ReadOnly = true
+	model.Conf = &model.AppConf{Lang: "symemo-readonly"}
+	util.Langs = map[string]map[int]string{
+		"symemo-readonly": {34: "Read-only mode."},
+		"en":              {34: "Read-only mode."},
+	}
+	t.Cleanup(func() {
+		symemoIsBooted = previousBooted
+		symemoQuery, symemoRunLearningAction = previousQuery, previousLearningAction
+		util.ReadOnly = previousReadOnly
+		model.Conf, util.Langs = previousConf, previousLangs
+	})
+
+	for _, request := range []struct {
+		name    string
+		handler gin.HandlerFunc
+	}{
+		{name: "Current", handler: getSymemoCurrentSession},
+		{name: "Start", handler: startSymemoLearning},
+		{name: "Stop", handler: stopSymemoLearning},
+	} {
+		response := invokeSymemoHandler(t, request.handler, `{}`)
+		if code := envelopeCode(t, response); code != 0 {
+			t.Fatalf("read-only %s = %s", request.name, response.Body.String())
+		}
+	}
+	beforeNextCalls := actionCalls
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/", model.CheckReadonly, nextSymemoTopic)
+	nextRequest := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"elementId":"`+created.ElementID+`","eventId":"read-only-next"}`))
+	nextRequest.Header.Set("Content-Type", "application/json")
+	nextResponse := httptest.NewRecorder()
+	router.ServeHTTP(nextResponse, nextRequest)
+	if code := envelopeCode(t, nextResponse); code == 0 {
+		t.Fatalf("read-only Next was not rejected: %s", nextResponse.Body.String())
+	}
+	if actionCalls != beforeNextCalls {
+		t.Fatal("read-only middleware invoked Topic Next workflow")
+	}
+	if after := snapshotAuthority(); !reflect.DeepEqual(after, before) {
+		t.Fatalf("read-only Current/Start/Stop/Next changed .sme/.smr/scheduler authority\nbefore=%#v\nafter=%#v", before, after)
+	}
+}
+
+func mustMarshalJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func TestSymemoHandlersRemainTransportOnly(t *testing.T) {

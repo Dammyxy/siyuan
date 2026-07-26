@@ -63,6 +63,137 @@ func TestRebuildAfterProjectionRemoval(t *testing.T) {
 	}
 }
 
+func TestTopicLearningAlphaRestartRebuildTwentyTimes(t *testing.T) {
+	root := t.TempDir()
+	storageRoot := filepath.Join(root, "storage")
+	schedulerRoot := filepath.Join(storageRoot, "scheduler")
+	if err := os.MkdirAll(schedulerRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for name, schedulerConfig := range defaultSchedulerConfigs() {
+		writeTestJSON(t, filepath.Join(schedulerRoot, name+".json"), schedulerConfig)
+	}
+	writeTestJSON(t, filepath.Join(schedulerRoot, "learning-day.json"), LearningDayConfigV1{
+		Spec: 1, TimeZoneIANA: "Asia/Shanghai", MidnightShiftHours: 4,
+	})
+	location, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, time.July, 1, 12, 0, 0, 0, location)
+	config := Config{
+		StorageRoot:   storageRoot,
+		IndexRoot:     filepath.Join(root, "index"),
+		SchedulerRoot: schedulerRoot,
+		Location:      location,
+		Now:           func() time.Time { return now },
+	}
+	engine, err := NewEngine(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := engine.CreateElement(t.Context(), CreateElementCommand{
+		Kind:        CreateElementAddNewTopic,
+		AddNewTopic: AddNewTopicCommand{Title: "Restart Topic", HTML: "<p>Durable material</p>"},
+	})
+	if err != nil || !created.CreateAccepted || !created.ReviewAccepted {
+		t.Fatalf("create Topic = %#v, err=%v", created, err)
+	}
+	elementPath := filepath.Join(config.ElementsRoot(), created.ElementID+".sme")
+	elementBefore, err := os.ReadFile(elementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = time.Date(2026, time.August, 1, 12, 0, 0, 0, location)
+	started, err := engine.RunLearningAction(t.Context(), LearningAction{Kind: ActionStart})
+	if err != nil || started.Session == nil || started.Session.Current == nil ||
+		started.Session.Current.ElementID != created.ElementID {
+		t.Fatalf("Start = %#v, err=%v", started, err)
+	}
+	const firstEventID = "20260801120000-feature007-restart-first"
+	accepted, err := engine.RunLearningAction(t.Context(), LearningAction{
+		Kind: ActionNextTopic, ElementID: created.ElementID, EventID: firstEventID,
+	})
+	if err != nil || !accepted.ReviewAccepted || accepted.EventID != firstEventID {
+		t.Fatalf("Next = %#v, err=%v", accepted, err)
+	}
+	expected, err := engine.ledger.Snapshot(created.ElementID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expected.AdoptedTerminalID != firstEventID || expected.LastRawGrade != nil || expected.LastPassed != nil {
+		t.Fatalf("Topic projection = %#v", expected)
+	}
+	if sameDay, startErr := engine.RunLearningAction(t.Context(), LearningAction{Kind: ActionStart}); startErr != nil || sameDay.Session == nil || sameDay.Session.Status != SessionCompleted {
+		t.Fatalf("same-day Start = %#v, err=%v", sameDay, startErr)
+	}
+	if err = engine.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	expectedHash, err := canonicalHash(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for iteration := 0; iteration < 20; iteration++ {
+		removeSQLiteFiles(config.IndexPath())
+		rebuilt, rebuildErr := NewEngine(t.Context(), config)
+		if rebuildErr != nil {
+			t.Fatalf("rebuild %d: %v", iteration+1, rebuildErr)
+		}
+		projection, snapshotErr := rebuilt.ledger.Snapshot(created.ElementID)
+		if snapshotErr != nil {
+			_ = rebuilt.Close()
+			t.Fatal(snapshotErr)
+		}
+		actualHash, hashErr := canonicalHash(projection)
+		if hashErr != nil || actualHash != expectedHash {
+			_ = rebuilt.Close()
+			t.Fatalf("rebuild %d projection = %#v, hash=%s, expected=%s, err=%v", iteration+1, projection, actualHash, expectedHash, hashErr)
+		}
+		current, currentErr := rebuilt.Query(t.Context(), Query{Kind: QueryCurrentSession})
+		if currentErr != nil || current.Session == nil || current.Session.Status != SessionCompleted {
+			_ = rebuilt.Close()
+			t.Fatalf("rebuild %d Current = %#v, err=%v", iteration+1, current, currentErr)
+		}
+		sameDay, startErr := rebuilt.RunLearningAction(t.Context(), LearningAction{Kind: ActionStart})
+		if startErr != nil || sameDay.Session == nil || sameDay.Session.Status != SessionCompleted {
+			_ = rebuilt.Close()
+			t.Fatalf("rebuild %d same-day Start = %#v, err=%v", iteration+1, sameDay, startErr)
+		}
+		if closeErr := rebuilt.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+	}
+
+	elementAfter, err := os.ReadFile(elementPath)
+	if err != nil || string(elementAfter) != string(elementBefore) {
+		t.Fatalf("rebuild changed .sme authority, err=%v", err)
+	}
+	if countEventsByID(t, config, firstEventID) != 1 {
+		t.Fatal("restart/rebuild duplicated the accepted .smr event")
+	}
+
+	now = expected.DueAt.Add(time.Minute)
+	removeSQLiteFiles(config.IndexPath())
+	later, err := NewEngine(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = later.Close() })
+	due, err := later.RunLearningAction(t.Context(), LearningAction{Kind: ActionStart})
+	if err != nil || due.Session == nil || due.Session.Current == nil || due.Session.Current.ElementID != created.ElementID {
+		t.Fatalf("later due Start = %#v, err=%v", due, err)
+	}
+	const secondEventID = "20260820090000-feature007-restart-second"
+	second, err := later.RunLearningAction(t.Context(), LearningAction{
+		Kind: ActionNextTopic, ElementID: created.ElementID, EventID: secondEventID,
+	})
+	if err != nil || !second.ReviewAccepted || countEventsByID(t, config, secondEventID) != 1 {
+		t.Fatalf("later Topic cycle = %#v, err=%v", second, err)
+	}
+}
+
 func TestRebuildPreservesRecordedLearningDayAfterConfigurationChange(t *testing.T) {
 	current := time.Date(2026, time.July, 20, 2, 0, 0, 0, time.UTC)
 	config := copyFixtureWorkspace(t)

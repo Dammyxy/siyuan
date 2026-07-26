@@ -7,6 +7,13 @@ import {
     ElementChangeResult,
     ElementDetailResult,
     ElementDetailView,
+    LearningSessionPhase,
+    LearningSessionProjection,
+    LearningSessionStage,
+    LearningSessionStatus,
+    SessionCallFailure,
+    SessionCallResult,
+    TopicNextCallResult,
     ElementTreeResult,
     TopicMaterialView,
 } from "./types";
@@ -17,6 +24,10 @@ const DETAIL_ENDPOINT = "/api/symemo/getElement";
 const CREATE_ENDPOINT = "/api/symemo/createHTMLTopic";
 const RENAME_ENDPOINT = "/api/symemo/renameElement";
 const SAVE_TOPIC_HTML_ENDPOINT = "/api/symemo/saveTopicHTML";
+const CURRENT_LEARNING_ENDPOINT = "/api/symemo/getCurrentLearningSession";
+const START_LEARNING_ENDPOINT = "/api/symemo/startLearning";
+const STOP_LEARNING_ENDPOINT = "/api/symemo/stopLearning";
+const NEXT_TOPIC_ENDPOINT = "/api/symemo/nextTopic";
 const TOPIC_HTML_CLEANING_POLICY = "siyuanmemo-topic-html-v1";
 
 type UnknownRecord = Record<string, unknown>;
@@ -150,6 +161,168 @@ const hasString = (value: UnknownRecord, key: string): boolean =>
 
 const getString = (value: UnknownRecord, key: string): string =>
     value[key] as string;
+
+const learningSessionStatuses = new Set<LearningSessionStatus>(["active", "completed"]);
+const learningSessionStages = new Set<LearningSessionStage>(["outstanding", "pending", "finalDrill", "completed"]);
+const learningSessionPhases = new Set<LearningSessionPhase>(["question", "answer", "confirmation", "completed"]);
+
+const decodeLearningSession = (value: unknown): LearningSessionProjection | undefined => {
+    if (!isRecord(value) || typeof value.status !== "string" ||
+        !learningSessionStatuses.has(value.status as LearningSessionStatus) ||
+        typeof value.phase !== "string" || !learningSessionPhases.has(value.phase as LearningSessionPhase)) {
+        return undefined;
+    }
+    if (hasOwn(value, "sessionId") && !hasString(value, "sessionId")) {
+        return undefined;
+    }
+    if (hasOwn(value, "stage") && (typeof value.stage !== "string" ||
+        !learningSessionStages.has(value.stage as LearningSessionStage))) {
+        return undefined;
+    }
+
+    const remainingElementIds = value.remainingElementIds === undefined ? [] : value.remainingElementIds;
+    if (!Array.isArray(remainingElementIds) || remainingElementIds.some((item) =>
+        typeof item !== "string" || item.trim().length === 0)) {
+        return undefined;
+    }
+    if (hasOwn(value, "pendingAcceptedEventId") && !hasString(value, "pendingAcceptedEventId")) {
+        return undefined;
+    }
+
+    let current: LearningSessionProjection["current"];
+    if (hasOwn(value, "current")) {
+        if (!isRecord(value.current) || !hasString(value.current, "kind") || !hasString(value.current, "elementId")) {
+            return undefined;
+        }
+        current = {
+            kind: getString(value.current, "kind"),
+            elementId: getString(value.current, "elementId"),
+        };
+    }
+
+    const session: LearningSessionProjection = {
+        status: value.status as LearningSessionStatus,
+        phase: value.phase as LearningSessionPhase,
+        remainingElementIds: [...remainingElementIds],
+    };
+    if (hasString(value, "sessionId")) session.sessionId = getString(value, "sessionId");
+    if (typeof value.stage === "string") session.stage = value.stage as LearningSessionStage;
+    if (current) session.current = current;
+    if (hasString(value, "pendingAcceptedEventId")) {
+        session.pendingAcceptedEventId = getString(value, "pendingAcceptedEventId");
+    }
+    return session;
+};
+
+const sessionTransportFailure = (kind: "request" | "response"): SessionCallResult => ({
+    ok: false,
+    failure: {errorCode: kind, retryable: true, kind},
+});
+
+const decodeSessionFailure = (envelope: UnknownRecord & {code: number; msg: string; data: unknown}): SessionCallFailure => {
+    if (!isRecord(envelope.data)) {
+        return {errorCode: "host-rejected", retryable: false, kind: "domain"};
+    }
+    const failure: SessionCallFailure = {
+        errorCode: typeof envelope.data.errorCode === "string" ? envelope.data.errorCode : "host-rejected",
+        retryable: typeof envelope.data.retryable === "boolean" ? envelope.data.retryable : false,
+        kind: "domain",
+    };
+    const session = decodeLearningSession(envelope.data.session);
+    if (session) failure.session = session;
+    return failure;
+};
+
+const callLearningSession = async (endpoint: string): Promise<SessionCallResult> => {
+    let envelope: unknown;
+    try {
+        envelope = await fetchSyncPost(endpoint, {});
+    } catch (error) {
+        return sessionTransportFailure(failureKind(error));
+    }
+    if (!hasEnvelopeShape(envelope)) {
+        return sessionTransportFailure("response");
+    }
+    if (envelope.code !== 0) {
+        return {ok: false, failure: decodeSessionFailure(envelope)};
+    }
+    const session = decodeLearningSession(envelope.data);
+    return session ? {ok: true, session} : sessionTransportFailure("response");
+};
+
+export const getCurrentLearningSession = (): Promise<SessionCallResult> =>
+    callLearningSession(CURRENT_LEARNING_ENDPOINT);
+
+export const startLearning = (): Promise<SessionCallResult> =>
+    callLearningSession(START_LEARNING_ENDPOINT);
+
+export const stopLearning = (): Promise<SessionCallResult> =>
+    callLearningSession(STOP_LEARNING_ENDPOINT);
+
+const nextTransportFailure = (kind: "request" | "response"): TopicNextCallResult => ({
+    ok: false,
+    failure: {
+        errorCode: kind,
+        retryable: true,
+        acceptance: "unknown",
+        kind,
+    },
+});
+
+const decodeTopicNextFailure = (
+    envelope: UnknownRecord & {code: number; msg: string; data: unknown},
+): TopicNextCallResult => {
+    if (!isRecord(envelope.data)) {
+        return {
+            ok: false,
+            failure: {
+                errorCode: "host-rejected",
+                retryable: false,
+                acceptance: "unknown",
+                kind: "domain",
+            },
+        };
+    }
+    const data = envelope.data;
+    const failure: Extract<TopicNextCallResult, {ok: false}>["failure"] = {
+        errorCode: hasString(data, "errorCode") ? getString(data, "errorCode") : "host-rejected",
+        retryable: typeof data.retryable === "boolean" ? data.retryable : false,
+        acceptance: data.reviewAccepted === true
+            ? "accepted"
+            : data.reviewAccepted === false ? "notAccepted" : "unknown",
+        kind: "domain",
+    };
+    if (hasString(data, "acceptedEventId")) failure.acceptedEventId = getString(data, "acceptedEventId");
+    const session = decodeLearningSession(data.session);
+    if (session) failure.session = session;
+    return {ok: false, failure};
+};
+
+export const nextTopic = async (elementId: string, eventId: string): Promise<TopicNextCallResult> => {
+    if (typeof elementId !== "string" || elementId.trim().length === 0 ||
+        typeof eventId !== "string" || eventId.trim().length === 0) {
+        return nextTransportFailure("response");
+    }
+
+    let envelope: unknown;
+    try {
+        envelope = await fetchSyncPost(NEXT_TOPIC_ENDPOINT, {elementId, eventId});
+    } catch (error) {
+        return nextTransportFailure(failureKind(error));
+    }
+    if (!hasEnvelopeShape(envelope)) {
+        return nextTransportFailure("response");
+    }
+    if (envelope.code !== 0) {
+        return decodeTopicNextFailure(envelope);
+    }
+    if (!isRecord(envelope.data) ||
+        envelope.data.reviewAccepted !== true || envelope.data.eventId !== eventId) {
+        return nextTransportFailure("response");
+    }
+    const session = decodeLearningSession(envelope.data.session);
+    return session ? {ok: true, eventId, reviewAccepted: true, session} : nextTransportFailure("response");
+};
 
 const decodeAcceptedChange = (value: unknown): AcceptedElementChange | undefined => {
     if (!isRecord(value) ||

@@ -1,4 +1,12 @@
-export {createHTMLTopic, getElement, getElementTree} from "./api";
+export {
+    createHTMLTopic,
+    getCurrentLearningSession,
+    getElement,
+    getElementTree,
+    nextTopic,
+    startLearning,
+    stopLearning,
+} from "./api";
 export {ContentSurfaceHost, getContentSurfaceDecision, isWritableHTMLTopic} from "./ContentSurfaceHost";
 export {Elements} from "./Elements";
 export {ElementTab} from "./ElementTab";
@@ -27,11 +35,22 @@ export type {
     ElementsDockState,
     OpenElementOptions,
     OpenGestureInput,
+    LearningControlPhase,
+    LearningControlProjection,
+    LearningPrimaryAction,
+    LearningSessionPhase,
+    LearningSessionProjection,
+    LearningSessionStage,
+    LearningSessionStatus,
     PersistedExpandedElementIds,
     RenderDecision,
     RendererUnavailableReason,
     SymemoElement,
     SymemoElementLayoutData,
+    SessionCallFailure,
+    SessionCallResult,
+    TopicNextCallFailure,
+    TopicNextCallResult,
     TopicMaterialView,
 } from "./types";
 export type {

@@ -295,6 +295,92 @@ func TestActiveSessionCrossingMidnightShiftKeepsOrderButUsesNewLearningDay(t *te
 	}
 }
 
+func TestTopicLearningAlphaHundredStartNextRuns(t *testing.T) {
+	passed := 0
+	for i := 0; i < 100; i++ {
+		t.Run(fmt.Sprintf("case-%03d", i+1), func(t *testing.T) {
+			location, err := time.LoadLocation("Asia/Shanghai")
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Date(2026, time.July, 1, 12, 0, 0, 0, location)
+			root := t.TempDir()
+			config := Config{
+				StorageRoot:   filepath.Join(root, "storage"),
+				IndexRoot:     filepath.Join(root, "index"),
+				SchedulerRoot: filepath.Join(root, "storage", "scheduler"),
+				Location:      location,
+				Now:           func() time.Time { return now },
+			}
+			if err = os.MkdirAll(config.ElementsRoot(), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err = os.MkdirAll(config.ReviewsRoot(), 0755); err != nil {
+				t.Fatal(err)
+			}
+			for name, schedulerConfig := range defaultSchedulerConfigs() {
+				writeTestJSON(t, filepath.Join(config.SchedulerRoot, name+".json"), schedulerConfig)
+			}
+			writeTestJSON(t, filepath.Join(config.SchedulerRoot, "learning-day.json"), LearningDayConfigV1{
+				Spec: 1, TimeZoneIANA: "Asia/Shanghai", MidnightShiftHours: 4,
+			})
+			engine, err := NewEngine(t.Context(), config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = engine.Close() })
+			createdIDs := make([]string, 0, 2)
+			for topic := 0; topic < 2; topic++ {
+				created, createErr := engine.CreateElement(t.Context(), CreateElementCommand{
+					Kind: CreateElementAddNewTopic,
+					AddNewTopic: AddNewTopicCommand{
+						Title: fmt.Sprintf("Topic %03d-%d", i+1, topic+1),
+						HTML:  "<p>Topic-only material</p>",
+					},
+				})
+				if createErr != nil || !created.CreateAccepted || !created.ReviewAccepted || created.ElementID == "" {
+					t.Fatalf("create Topic %d = %#v, err=%v", topic+1, created, createErr)
+				}
+				createdIDs = append(createdIDs, created.ElementID)
+			}
+			now = time.Date(2026, time.August, 1, 3, 59, 59, 0, location)
+			started, err := engine.RunLearningAction(t.Context(), LearningAction{Kind: ActionStart})
+			if err != nil || started.Session == nil || started.Session.Current == nil ||
+				started.Session.Current.Kind != "element.topic" || started.Session.Phase != PhaseQuestion {
+				t.Fatalf("Start = %#v, err=%v", started, err)
+			}
+			if started.Session.Current.ElementID != createdIDs[0] && started.Session.Current.ElementID != createdIDs[1] {
+				t.Fatalf("Start selected non-fixture target %s", started.Session.Current.ElementID)
+			}
+			beforeOrder := append([]string(nil), started.Session.RemainingElementIDs...)
+			now = time.Date(2026, time.August, 1, 4, 0, 1, 0, location)
+			eventID := fmt.Sprintf("20260801040001-feature007-%03d", i+1)
+			next, err := engine.RunLearningAction(t.Context(), LearningAction{
+				Kind: ActionNextTopic, ElementID: started.Session.Current.ElementID, EventID: eventID,
+			})
+			if err != nil || !next.ReviewAccepted || next.EventID != eventID || next.Session == nil {
+				t.Fatalf("Next = %#v, err=%v", next, err)
+			}
+			if len(beforeOrder) > 0 && (next.Session.Current == nil || next.Session.Current.ElementID != beforeOrder[0]) {
+				t.Fatalf("active order changed before=%#v after=%#v", beforeOrder, next.Session)
+			}
+			if countEventsByID(t, config, eventID) != 1 {
+				t.Fatalf("event %s count != 1", eventID)
+			}
+			event := eventByID(t, mustEvents(t, config), eventID)
+			if event.ReviewKind != "nextTopic" || event.RawGrade != nil || event.Passed != nil ||
+				event.LearningDayID != "2026-08-01" {
+				t.Fatalf("Topic event = %#v", event)
+			}
+			passed++
+		})
+	}
+	if passed != 100 {
+		t.Fatalf("Topic Learning Alpha = %d/100", passed)
+	}
+	t.Logf("Topic Learning Alpha = %d/100; exactly one ungraded event per case; zero duplicates", passed)
+}
+
 func TestItemShortTermDueCrossingMidnightShiftReplays(t *testing.T) {
 	config := copyFixtureWorkspace(t)
 	installDailyLearningConfig(t, config, "Asia/Shanghai", 4)

@@ -42,6 +42,95 @@ export type ElementDetailResult =
     | {ok: true; element: ElementDetailView}
     | {ok: false; kind: ElementReadFailureKind | "missing"};
 
+export type LearningSessionStatus = "active" | "completed";
+
+export type LearningSessionStage = "outstanding" | "pending" | "finalDrill" | "completed";
+
+export type LearningSessionPhase = "question" | "answer" | "confirmation" | "completed";
+
+export interface ActiveLearningTargetRef {
+    kind: string;
+    elementId: string;
+}
+
+export interface LearningSessionProjection {
+    sessionId?: string;
+    status: LearningSessionStatus;
+    stage?: LearningSessionStage;
+    phase: LearningSessionPhase;
+    current?: ActiveLearningTargetRef;
+    remainingElementIds: string[];
+    pendingAcceptedEventId?: string;
+}
+
+export interface SessionCallFailure {
+    errorCode: string;
+    retryable: boolean;
+    kind: "request" | "response" | "domain";
+    session?: LearningSessionProjection;
+}
+
+export type SessionCallResult =
+    | {ok: true; session: LearningSessionProjection}
+    | {ok: false; failure: SessionCallFailure};
+
+export interface TopicNextCallFailure {
+    errorCode: string;
+    retryable: boolean;
+    acceptance: "notAccepted" | "accepted" | "unknown";
+    acceptedEventId?: string;
+    session?: LearningSessionProjection;
+    kind: "request" | "response" | "domain";
+}
+
+export type TopicNextCallResult =
+    | {ok: true; eventId: string; reviewAccepted: true; session: LearningSessionProjection}
+    | {ok: false; failure: TopicNextCallFailure};
+
+export type TopicNextIntentState =
+    | "submitting"
+    | "retryable"
+    | "acceptedNotAdvanced"
+    | "acceptedRecovering"
+    | "acceptedAdvanced"
+    | "reconciled";
+
+export interface TopicNextIntent {
+    eventId: string;
+    sessionId?: string;
+    elementId: string;
+    state: TopicNextIntentState;
+    acceptance: "unknown" | "notAccepted" | "accepted";
+    errorCode?: string;
+    session?: LearningSessionProjection;
+}
+
+export type LearningControlPhase =
+    | "loading"
+    | "idle"
+    | "preview"
+    | "activeTopic"
+    | "busy"
+    | "retryableNext"
+    | "acceptedNotAdvanced"
+    | "acceptedRecovering"
+    | "completed"
+    | "noDue"
+    | "unsupportedSession"
+    | "readOnly"
+    | "failure";
+
+export type LearningPrimaryAction = "learn" | "next" | "retryNext" | "continue" | "resume";
+
+export interface LearningControlProjection {
+    phase: LearningControlPhase;
+    primaryAction?: LearningPrimaryAction;
+    secondaryAction?: "stop";
+    busy: boolean;
+    messageKey?: string;
+    displayedElementId: string;
+}
+
 export interface ElementReadClient {
     getElementTree(): Promise<ElementTreeResult>;
     getElement(elementId: string): Promise<ElementDetailResult>;

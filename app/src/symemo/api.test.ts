@@ -1,5 +1,6 @@
 import {after, before, beforeEach, describe, it} from "node:test";
 import * as assert from "node:assert/strict";
+import type {LearningSessionProjection} from "./types";
 import {
     buildDetailEnvelope,
     buildItem,
@@ -24,6 +25,10 @@ let getElementTree: typeof import("./api").getElementTree;
 let createHTMLTopic: typeof import("./api").createHTMLTopic;
 let renameElement: typeof import("./api").renameElement;
 let saveTopicHTML: typeof import("./api").saveTopicHTML;
+let getCurrentLearningSession: typeof import("./api").getCurrentLearningSession;
+let startLearning: typeof import("./api").startLearning;
+let stopLearning: typeof import("./api").stopLearning;
+let nextTopic: typeof import("./api").nextTopic;
 let calls: FetchCall[] = [];
 let nextEnvelope: RawFixtureEnvelope<unknown>;
 let nextError: unknown;
@@ -38,7 +43,17 @@ before(async () => {
             },
         },
     } as NodeModule;
-    ({createHTMLTopic, getElement, getElementTree, renameElement, saveTopicHTML} = await import("./api"));
+    ({
+        createHTMLTopic,
+        getCurrentLearningSession,
+        getElement,
+        getElementTree,
+        renameElement,
+        saveTopicHTML,
+        nextTopic,
+        startLearning,
+        stopLearning,
+    } = await import("./api"));
 });
 
 const installFetchResponse = (envelope: RawFixtureEnvelope<unknown>) => {
@@ -371,6 +386,295 @@ describe("writable Element transport clients", () => {
                 acceptedElementId: "accepted-topic-id",
             },
         });
+    });
+});
+
+describe("Learning Session transport clients", () => {
+    const activeSession = {
+        sessionId: "session-007",
+        status: "active",
+        stage: "outstanding",
+        phase: "question",
+        current: {
+            kind: "element.topic",
+            elementId: FIXTURE_ELEMENT_IDS.supportedTopic,
+            prompt: "must be discarded",
+            answer: "must be discarded",
+            observedProjection: {dueDay: "2026-07-26"},
+        },
+        remainingElementIds: [FIXTURE_ELEMENT_IDS.futureChild],
+        pendingAcceptedEventId: "event-pending",
+        answerVisible: false,
+        algorithmState: {name: "must be discarded"},
+    };
+
+    it("posts exact empty bodies to Current, Start, and Stop", async () => {
+        installFetchResponse(buildRawEnvelope(activeSession));
+        await getCurrentLearningSession();
+        await startLearning();
+        await stopLearning();
+
+        assert.deepEqual(calls, [
+            {url: "/api/symemo/getCurrentLearningSession", data: {}},
+            {url: "/api/symemo/startLearning", data: {}},
+            {url: "/api/symemo/stopLearning", data: {}},
+        ]);
+    });
+
+    it("strictly narrows active and completed sessions", async () => {
+        installFetchResponse(buildRawEnvelope(activeSession));
+        const active = await getCurrentLearningSession();
+        assert.deepEqual(active, {
+            ok: true,
+            session: {
+                sessionId: "session-007",
+                status: "active",
+                stage: "outstanding",
+                phase: "question",
+                current: {
+                    kind: "element.topic",
+                    elementId: FIXTURE_ELEMENT_IDS.supportedTopic,
+                },
+                remainingElementIds: [FIXTURE_ELEMENT_IDS.futureChild],
+                pendingAcceptedEventId: "event-pending",
+            },
+        });
+        assert.equal(JSON.stringify(active).includes("prompt"), false);
+        assert.equal(JSON.stringify(active).includes("answer"), false);
+        assert.equal(JSON.stringify(active).includes("algorithm"), false);
+
+        installFetchResponse(buildRawEnvelope({status: "completed", stage: "completed", phase: "completed"}));
+        assert.deepEqual(await startLearning(), {
+            ok: true,
+            session: {
+                status: "completed",
+                stage: "completed",
+                phase: "completed",
+                remainingElementIds: [],
+            },
+        });
+    });
+
+    it("retains only a valid embedded session from structured failures", async () => {
+        installFetchResponse(buildRawEnvelope({
+            errorCode: "invalid-session-phase",
+            retryable: false,
+            session: activeSession,
+        }, {code: -1, msg: "hidden"}));
+
+        assert.deepEqual(await stopLearning(), {
+            ok: false,
+            failure: {
+                errorCode: "invalid-session-phase",
+                retryable: false,
+                kind: "domain",
+                session: {
+                    sessionId: "session-007",
+                    status: "active",
+                    stage: "outstanding",
+                    phase: "question",
+                    current: {
+                        kind: "element.topic",
+                        elementId: FIXTURE_ELEMENT_IDS.supportedTopic,
+                    },
+                    remainingElementIds: [FIXTURE_ELEMENT_IDS.futureChild],
+                    pendingAcceptedEventId: "event-pending",
+                },
+            },
+        });
+    });
+
+    it("fails closed for malformed sessions, envelopes, and thrown requests", async () => {
+        installFetchResponse(buildRawEnvelope({status: "active", phase: "question", current: {kind: "element.topic"}}));
+        assert.deepEqual(await getCurrentLearningSession(), {
+            ok: false,
+            failure: {errorCode: "response", retryable: true, kind: "response"},
+        });
+
+        installFetchResponse({code: 0, msg: "", data: null});
+        assert.deepEqual(await startLearning(), {
+            ok: false,
+            failure: {errorCode: "response", retryable: true, kind: "response"},
+        });
+
+        nextError = new TypeError("offline");
+        assert.deepEqual(await stopLearning(), {
+            ok: false,
+            failure: {errorCode: "request", retryable: true, kind: "request"},
+        });
+    });
+});
+
+describe("Topic Next transport client", () => {
+    const returnedSession: LearningSessionProjection = {
+        sessionId: "session-007",
+        status: "active",
+        stage: "outstanding",
+        phase: "question",
+        current: {kind: "element.topic", elementId: FIXTURE_ELEMENT_IDS.futureChild},
+        remainingElementIds: [],
+    };
+
+    it("posts the exact Topic identity and accepts only a matching durable success", async () => {
+        installFetchResponse(buildRawEnvelope({
+            reviewAccepted: true,
+            eventId: "event-007-next",
+            session: returnedSession,
+            projection: {intervalDays: 999},
+            rawGrade: 4,
+        }));
+
+        const result = await nextTopic(FIXTURE_ELEMENT_IDS.supportedTopic, "event-007-next");
+
+        assert.deepEqual(calls, [{
+            url: "/api/symemo/nextTopic",
+            data: {elementId: FIXTURE_ELEMENT_IDS.supportedTopic, eventId: "event-007-next"},
+        }]);
+        assert.deepEqual(result, {
+            ok: true,
+            eventId: "event-007-next",
+            reviewAccepted: true,
+            session: {
+                sessionId: "session-007",
+                status: "active",
+                stage: "outstanding",
+                phase: "question",
+                current: {kind: "element.topic", elementId: FIXTURE_ELEMENT_IDS.futureChild},
+                remainingElementIds: [],
+            },
+        });
+        assert.equal(JSON.stringify(result).includes("intervalDays"), false);
+        assert.equal(JSON.stringify(result).includes("rawGrade"), false);
+    });
+
+    it("rejects blank inputs locally without sending a request", async () => {
+        assert.equal((await nextTopic("", "event-007")).ok, false);
+        assert.equal((await nextTopic(FIXTURE_ELEMENT_IDS.supportedTopic, " ")).ok, false);
+        assert.deepEqual(calls, []);
+    });
+
+    it("classifies mismatched, non-accepted, and malformed successes as acceptance unknown", async () => {
+        for (const data of [
+            {reviewAccepted: true, eventId: "different", session: returnedSession},
+            {reviewAccepted: false, eventId: "event-007-next", session: returnedSession},
+            {
+                reviewAccepted: true,
+                eventId: "event-007-next",
+                session: {status: "active", phase: "question", current: {kind: "element.topic"}},
+            },
+        ]) {
+            installFetchResponse(buildRawEnvelope(data));
+            const result = await nextTopic(FIXTURE_ELEMENT_IDS.supportedTopic, "event-007-next");
+            assert.deepEqual(result, {
+                ok: false,
+                failure: {
+                    errorCode: "response",
+                    retryable: true,
+                    acceptance: "unknown",
+                    kind: "response",
+                },
+            });
+        }
+    });
+
+    it("decodes structured pre-acceptance and accepted recovery failures without trusting identity alone", async () => {
+        const cases = [
+            {
+                data: {
+                    errorCode: "durable-write-failed",
+                    retryable: true,
+                    acceptedEventId: "event-007-next",
+                    reviewAccepted: false,
+                    session: returnedSession,
+                },
+                acceptance: "notAccepted",
+            },
+            {
+                data: {
+                    errorCode: "queue-advance-failed",
+                    retryable: true,
+                    acceptedEventId: "event-007-next",
+                    reviewAccepted: true,
+                    session: {...returnedSession, pendingAcceptedEventId: "event-007-next"},
+                },
+                acceptance: "accepted",
+            },
+            {
+                data: {
+                    errorCode: "projection-refresh-failed",
+                    retryable: true,
+                    acceptedEventId: "event-007-next",
+                    reviewAccepted: true,
+                    session: returnedSession,
+                },
+                acceptance: "accepted",
+            },
+            {
+                data: {
+                    errorCode: "projection-rebuild-failed",
+                    retryable: true,
+                    acceptedEventId: "event-007-next",
+                    reviewAccepted: true,
+                    session: returnedSession,
+                },
+                acceptance: "accepted",
+            },
+        ] as const;
+
+        for (const value of cases) {
+            installFetchResponse(buildRawEnvelope(value.data, {code: -1, msg: "failed"}));
+            const result = await nextTopic(FIXTURE_ELEMENT_IDS.supportedTopic, "event-007-next");
+            assert.equal(result.ok, false);
+            if (result.ok === false) {
+                assert.equal(result.failure.errorCode, value.data.errorCode);
+                assert.equal(result.failure.acceptance, value.acceptance);
+                assert.equal(result.failure.acceptedEventId, "event-007-next");
+                assert.deepEqual(result.failure.session?.current, returnedSession.current);
+            }
+        }
+    });
+
+    it("decodes stale, repair, and read-only failures conservatively", async () => {
+        for (const errorCode of ["target-mismatch", "invalid-session-phase", "history-requires-repair"]) {
+            installFetchResponse(buildRawEnvelope({
+                errorCode,
+                retryable: errorCode !== "history-requires-repair",
+                acceptedEventId: "event-007-next",
+                reviewAccepted: false,
+                session: returnedSession,
+            }, {code: -1, msg: "failed"}));
+            const result = await nextTopic(FIXTURE_ELEMENT_IDS.supportedTopic, "event-007-next");
+            assert.equal(result.ok, false);
+            if (result.ok === false) {
+                assert.equal(result.failure.acceptance, "notAccepted");
+                assert.equal(result.failure.kind, "domain");
+            }
+        }
+
+        installFetchResponse(buildRawEnvelope({closeTimeout: 5000}, {code: -1, msg: "read only"}));
+        const readOnly = await nextTopic(FIXTURE_ELEMENT_IDS.supportedTopic, "event-007-next");
+        assert.equal(readOnly.ok, false);
+        if (readOnly.ok === false) {
+            assert.equal(readOnly.failure.errorCode, "host-rejected");
+            assert.equal(readOnly.failure.acceptance, "unknown");
+        }
+    });
+
+    it("keeps thrown, parse, and malformed outcomes acceptance-unknown", async () => {
+        nextError = new TypeError("offline");
+        let result = await nextTopic(FIXTURE_ELEMENT_IDS.supportedTopic, "event-007-next");
+        assert.equal(result.ok, false);
+        if (result.ok === false) assert.equal(result.failure.acceptance, "unknown");
+
+        nextError = new SyntaxError("json");
+        result = await nextTopic(FIXTURE_ELEMENT_IDS.supportedTopic, "event-007-next");
+        assert.equal(result.ok, false);
+        if (result.ok === false) assert.equal(result.failure.kind, "response");
+
+        installFetchResponse({code: -1, msg: "failed", data: "bad"});
+        result = await nextTopic(FIXTURE_ELEMENT_IDS.supportedTopic, "event-007-next");
+        assert.equal(result.ok, false);
+        if (result.ok === false) assert.equal(result.failure.acceptance, "unknown");
     });
 });
 

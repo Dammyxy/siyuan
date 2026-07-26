@@ -1,7 +1,7 @@
 import {after, before, beforeEach, describe, it} from "node:test";
 import * as assert from "node:assert/strict";
 import type {App} from "../index";
-import type {ElementDetailResult, OpenElementOptions} from "./types";
+import type {ElementDetailResult, OpenElementOptions, SessionCallResult} from "./types";
 import {deferred, TestDocument, TestElement} from "./testDom";
 
 const stubPaths = [
@@ -20,11 +20,18 @@ let renderReadOnlyTopic: typeof import("./ElementTab").renderReadOnlyTopic;
 let deriveElementTabState: typeof import("./ElementTab").deriveElementTabState;
 let ElementTab: typeof import("./ElementTab").ElementTab;
 let getElementImpl: (elementId: string) => Promise<ElementDetailResult>;
+let getCurrentLearningSessionImpl: () => Promise<SessionCallResult>;
+let startLearningImpl: () => Promise<SessionCallResult>;
+let stopLearningImpl: () => Promise<SessionCallResult>;
+let nextTopicImpl: typeof import("./api").nextTopic;
 let testDocument: TestDocument;
 let lastSurface: FakeTopicHtmlSurface | undefined;
 let openElementCalls: OpenElementOptions[];
-let lastParticipant: {setWindowBarrier(active: boolean): void} | undefined;
+let lastParticipant: {setWindowBarrier(active: boolean): void; cleanup?(): void} | undefined;
 let surfaceMountError: Error | undefined;
+let surfaceMountGate: ReturnType<typeof deferred<void>> | undefined;
+let surfaceDestroyCalls = 0;
+let unregisterCalls = 0;
 
 const captureSurface = (surface: FakeTopicHtmlSurface) => {
     lastSurface = surface;
@@ -46,6 +53,7 @@ class FakeTopicHtmlSurface {
 
     public async mount() {
         if (surfaceMountError) throw surfaceMountError;
+        if (surfaceMountGate) await surfaceMountGate.promise;
         this.mounted = true;
         this.onTransitionReadyChange?.(true);
     }
@@ -55,7 +63,9 @@ class FakeTopicHtmlSurface {
     }
 
     public focus() {}
-    public destroy() {}
+    public destroy() {
+        surfaceDestroyCalls++;
+    }
 }
 
 before(async () => {
@@ -67,16 +77,28 @@ before(async () => {
     }}} as NodeModule;
     require.cache[stubPaths[1]] = {exports: {mathRender() {}}} as NodeModule;
     require.cache[stubPaths[2]] = {exports: {openLink() {}}} as NodeModule;
-    require.cache[stubPaths[3]] = {exports: {getElement: (elementId: string) => getElementImpl(elementId)}} as NodeModule;
+    require.cache[stubPaths[3]] = {exports: {
+        getElement: (elementId: string) => getElementImpl(elementId),
+        getCurrentLearningSession: () => getCurrentLearningSessionImpl(),
+        startLearning: () => startLearningImpl(),
+        stopLearning: () => stopLearningImpl(),
+        nextTopic: (elementId: string, eventId: string) => nextTopicImpl(elementId, eventId),
+    }} as NodeModule;
     require.cache[stubPaths[4]] = {exports: {TopicHtmlSurface: FakeTopicHtmlSurface}} as NodeModule;
     require.cache[stubPaths[5]] = {exports: {
         openElement: (options: OpenElementOptions) => openElementCalls.push(options),
     }} as NodeModule;
     require.cache[stubPaths[6]] = {exports: {
-        registerWindowAuthoringParticipant: (participant: {setWindowBarrier(active: boolean): void}) => {
+        registerWindowAuthoringParticipant: (participant: {setWindowBarrier(active: boolean): void; cleanup?(): void}) => {
             lastParticipant = participant;
-            return (): void => undefined;
+            return (): void => {
+                unregisterCalls++;
+            };
         },
+        runWindowAuthoringOperation: async (_name: string, callback: (operation: {isCancelled: boolean}) => unknown) => ({
+            started: true,
+            value: await callback({isCancelled: false}),
+        }),
     }} as NodeModule;
     (globalThis as unknown as {window: Window}).window = {
         siyuan: {
@@ -86,6 +108,17 @@ before(async () => {
                 retry: "Retry",
                 symemoElementLoadFailed: "Load failed",
                 symemoElementMissing: "Missing",
+                symemoLearn: "Learn",
+                symemoNext: "Next",
+                symemoResumeLearning: "Resume learning",
+                symemoEndLearning: "End learning",
+                symemoLearningLoading: "Loading learning session...",
+                symemoLearningBusy: "Updating learning session...",
+                symemoLearningPreview: "Another Topic is active.",
+                symemoNoDueTopics: "No due Topics.",
+                symemoUnsupportedLearningStage: "Unsupported stage.",
+                symemoLearningReadOnly: "Read-only.",
+                symemoLearningUnavailable: "Learning unavailable.",
                 untitled: "Untitled",
             },
         },
@@ -99,10 +132,25 @@ beforeEach(() => {
     testDocument = new TestDocument();
     (globalThis as typeof globalThis & {document: Document}).document = testDocument as unknown as Document;
     getElementImpl = async () => ({ok: false, kind: "response"});
+    getCurrentLearningSessionImpl = async () => ({
+        ok: true,
+        session: {status: "completed", stage: "completed", phase: "completed", remainingElementIds: []},
+    });
+    startLearningImpl = getCurrentLearningSessionImpl;
+    stopLearningImpl = getCurrentLearningSessionImpl;
+    nextTopicImpl = async (_elementId, eventId) => ({
+        ok: true,
+        eventId,
+        reviewAccepted: true,
+        session: {status: "completed", stage: "completed", phase: "completed", remainingElementIds: []},
+    });
     lastSurface = undefined;
     lastParticipant = undefined;
     openElementCalls = [];
     surfaceMountError = undefined;
+    surfaceMountGate = undefined;
+    surfaceDestroyCalls = 0;
+    unregisterCalls = 0;
 });
 
 after(() => {
@@ -279,6 +327,123 @@ const createTabFixture = () => {
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe("Element tab lifecycle", () => {
+    it("creates stable content and learning-control siblings before asynchronous reads resolve", () => {
+        const detail = deferred<ElementDetailResult>();
+        const current = deferred<SessionCallResult>();
+        getElementImpl = () => detail.promise;
+        getCurrentLearningSessionImpl = () => current.promise;
+        const fixture = createTabFixture();
+
+        new ElementTab({app: {} as App, tab: fixture.tab, elementId: "topic-id"});
+
+        assert.equal(fixture.panelElement.children.length, 2);
+        assert.equal(fixture.panelElement.children[0].classList.contains("symemo-element-tab__surface"), true);
+        assert.equal(fixture.panelElement.children[1].classList.contains("symemo-element-tab__learning"), true);
+    });
+
+    it("keeps controls stable when detail and Current resolve in either order", async () => {
+        const detail = deferred<ElementDetailResult>();
+        const current = deferred<SessionCallResult>();
+        getElementImpl = () => detail.promise;
+        getCurrentLearningSessionImpl = () => current.promise;
+        const fixture = createTabFixture();
+        new ElementTab({app: {} as App, tab: fixture.tab, elementId: "topic-id"});
+        const controls = fixture.panelElement.children[1];
+
+        current.resolve({ok: true, session: {
+            sessionId: "session-007",
+            status: "active",
+            stage: "outstanding",
+            phase: "question",
+            current: {kind: "element.topic", elementId: "topic-id"},
+            remainingElementIds: [],
+        }});
+        await nextTurn();
+        assert.equal(fixture.panelElement.children[1], controls);
+
+        detail.resolve({ok: true, element: writableTopic});
+        await nextTurn();
+        assert.equal(fixture.panelElement.children[1], controls);
+        assert.equal(lastSurface?.mounted, true);
+        assert.equal(surfaceDestroyCalls, 0);
+        assert.equal(controls.querySelector("button")?.textContent, "Next");
+    });
+
+    it("keeps controls through loading failure and retryable content replacement", async () => {
+        getElementImpl = async () => ({ok: false, kind: "request"});
+        const fixture = createTabFixture();
+        new ElementTab({app: {} as App, tab: fixture.tab, elementId: "topic-id"});
+        const controls = fixture.panelElement.children[1];
+        await nextTurn();
+
+        assert.equal(fixture.panelElement.children[1], controls);
+        assert.ok(fixture.panelElement.children[0].querySelector("button"));
+        assert.equal(controls.classList.contains("symemo-element-tab__learning"), true);
+    });
+
+    it("preserves a recoverable Current failure after Element detail reprojects eligibility", async () => {
+        const detail = deferred<ElementDetailResult>();
+        getElementImpl = () => detail.promise;
+        getCurrentLearningSessionImpl = async () => ({
+            ok: false,
+            failure: {errorCode: "request", retryable: true, kind: "request"},
+        });
+        const fixture = createTabFixture();
+        new ElementTab({app: {} as App, tab: fixture.tab, elementId: "topic-id"});
+        const controls = fixture.panelElement.children[1];
+        await nextTurn();
+        assert.equal(controls.querySelector("button")?.textContent, "Resume learning");
+
+        detail.resolve({ok: true, element: writableTopic});
+        await nextTurn();
+
+        assert.equal(controls.querySelector("button")?.textContent, "Resume learning");
+        assert.equal(controls.textContent.includes("Loading learning session"), false);
+    });
+
+    it("routes ordinary and repeated cleanup through one idempotent teardown", async () => {
+        getElementImpl = async () => ({ok: true, element: writableTopic});
+        const fixture = createTabFixture();
+        const model = new ElementTab({app: {} as App, tab: fixture.tab, elementId: "topic-id"});
+        await nextTurn();
+
+        (model as unknown as {cleanup(): void}).cleanup();
+        (model as unknown as {cleanup(): void}).cleanup();
+        model.destroy();
+
+        assert.equal(unregisterCalls, 1);
+        assert.equal(surfaceDestroyCalls, 1);
+        assert.equal(fixture.panelElement.children.length, 0);
+    });
+
+    it("routes participant cleanup through the same model teardown", async () => {
+        getElementImpl = async () => ({ok: true, element: writableTopic});
+        const fixture = createTabFixture();
+        const model = new ElementTab({app: {} as App, tab: fixture.tab, elementId: "topic-id"});
+        await nextTurn();
+
+        lastParticipant?.cleanup?.();
+        model.destroy();
+
+        assert.equal(unregisterCalls, 1);
+        assert.equal(surfaceDestroyCalls, 1);
+    });
+
+    it("keeps a detail response inert after cleanup invalidates its generation", async () => {
+        const request = deferred<ElementDetailResult>();
+        getElementImpl = () => request.promise;
+        const fixture = createTabFixture();
+        const model = new ElementTab({app: {} as App, tab: fixture.tab, elementId: "topic-id"});
+
+        (model as unknown as {cleanup(): void}).cleanup();
+        request.resolve({ok: true, element: writableTopic});
+        await nextTurn();
+
+        assert.equal(model.state.phase, "loading");
+        assert.equal(lastSurface, undefined);
+        assert.equal(fixture.panelElement.children.length, 0);
+    });
+
     it("does not expose a reusable tab while the Element detail request is pending", async () => {
         window.siyuan.config.fileTree.openFilesUseCurrentTab = true;
         const request = deferred<ElementDetailResult>();
@@ -370,6 +535,58 @@ describe("Element tab lifecycle", () => {
         assert.equal(fixture.panelElement.querySelector(".b3-label__text")?.textContent, "Load failed");
         assert.ok(fixture.panelElement.querySelector("button"));
         assert.equal(fixture.headElement.classList.contains("item--unupdate"), true);
+        const controls = fixture.panelElement.children[1];
+        assert.equal(
+            controls.querySelector(".symemo-element-tab__learning-status")?.textContent,
+            "Learning unavailable.",
+        );
+    });
+
+    it("restores active Topic controls when a barrier begins during Surface mount", async () => {
+        surfaceMountGate = deferred<void>();
+        getElementImpl = async () => ({ok: true, element: writableTopic});
+        getCurrentLearningSessionImpl = async () => ({ok: true, session: {
+            sessionId: "session-007",
+            status: "active",
+            stage: "outstanding",
+            phase: "question",
+            current: {kind: "element.topic", elementId: "topic-id"},
+            remainingElementIds: [],
+        }});
+        const fixture = createTabFixture();
+        const model = new ElementTab({app: {} as App, tab: fixture.tab, elementId: "topic-id"});
+        await nextTurn();
+
+        model.setWindowBarrier(true);
+        surfaceMountGate.resolve();
+        await nextTurn();
+        model.setWindowBarrier(false);
+        await nextTurn();
+
+        assert.equal(lastSurface?.mounted, true);
+        assert.equal(fixture.panelElement.children[1].querySelector("button")?.textContent, "Next");
+    });
+
+    it("never exposes Next for a read-only fallback that is not a supported Topic", async () => {
+        getElementImpl = async () => ({ok: true, element: {
+            ...supportedTopic,
+            supportStatus: "unsupportedReadOnly",
+        }});
+        getCurrentLearningSessionImpl = async () => ({ok: true, session: {
+            sessionId: "session-007",
+            status: "active",
+            stage: "outstanding",
+            phase: "question",
+            current: {kind: "element.topic", elementId: "topic-id"},
+            remainingElementIds: [],
+        }});
+        const fixture = createTabFixture();
+        new ElementTab({app: {} as App, tab: fixture.tab, elementId: "topic-id"});
+        await nextTurn();
+
+        const controls = fixture.panelElement.children[1];
+        assert.equal(controls.textContent.includes("Next"), false);
+        assert.equal(controls.querySelector("button")?.textContent, "End learning");
     });
 
     it("keeps a late writable detail inert until the window barrier is cancelled", async () => {
