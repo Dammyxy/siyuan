@@ -1,7 +1,7 @@
 import {after, before, beforeEach, describe, it} from "node:test";
 import * as assert from "node:assert/strict";
 import type {App} from "../index";
-import type {ElementDetailResult} from "./types";
+import type {ElementDetailResult, OpenElementOptions} from "./types";
 import {deferred, TestDocument, TestElement} from "./testDom";
 
 const stubPaths = [
@@ -9,6 +9,9 @@ const stubPaths = [
     require.resolve("../protyle/render/mathRender"),
     require.resolve("../editor/openLink"),
     require.resolve("./api"),
+    require.resolve("./TopicHtmlSurface"),
+    require.resolve("./openElement"),
+    require.resolve("./authoringRegistry"),
 ];
 const originalModules = stubPaths.map((modulePath) => require.cache[modulePath]);
 let classifyReaderHref: typeof import("./ElementTab").classifyReaderHref;
@@ -18,6 +21,42 @@ let deriveElementTabState: typeof import("./ElementTab").deriveElementTabState;
 let ElementTab: typeof import("./ElementTab").ElementTab;
 let getElementImpl: (elementId: string) => Promise<ElementDetailResult>;
 let testDocument: TestDocument;
+let lastSurface: FakeTopicHtmlSurface | undefined;
+let openElementCalls: OpenElementOptions[];
+let lastParticipant: {setWindowBarrier(active: boolean): void} | undefined;
+let surfaceMountError: Error | undefined;
+
+const captureSurface = (surface: FakeTopicHtmlSurface) => {
+    lastSurface = surface;
+};
+
+class FakeTopicHtmlSurface {
+    public mounted = false;
+    public readonly onTransitionReadyChange?: (ready: boolean) => void;
+    public readonly onSaveAsNew?: (elementId: string) => void;
+
+    constructor(options: {
+        onTransitionReadyChange?: (ready: boolean) => void;
+        onSaveAsNew?: (elementId: string) => void;
+    }) {
+        this.onTransitionReadyChange = options.onTransitionReadyChange;
+        this.onSaveAsNew = options.onSaveAsNew;
+        captureSurface(this);
+    }
+
+    public async mount() {
+        if (surfaceMountError) throw surfaceMountError;
+        this.mounted = true;
+        this.onTransitionReadyChange?.(true);
+    }
+
+    public prepareTransition() {
+        return Promise.resolve({allowed: true});
+    }
+
+    public focus() {}
+    public destroy() {}
+}
 
 before(async () => {
     require.cache[stubPaths[0]] = {exports: {Model: class {
@@ -29,6 +68,16 @@ before(async () => {
     require.cache[stubPaths[1]] = {exports: {mathRender() {}}} as NodeModule;
     require.cache[stubPaths[2]] = {exports: {openLink() {}}} as NodeModule;
     require.cache[stubPaths[3]] = {exports: {getElement: (elementId: string) => getElementImpl(elementId)}} as NodeModule;
+    require.cache[stubPaths[4]] = {exports: {TopicHtmlSurface: FakeTopicHtmlSurface}} as NodeModule;
+    require.cache[stubPaths[5]] = {exports: {
+        openElement: (options: OpenElementOptions) => openElementCalls.push(options),
+    }} as NodeModule;
+    require.cache[stubPaths[6]] = {exports: {
+        registerWindowAuthoringParticipant: (participant: {setWindowBarrier(active: boolean): void}) => {
+            lastParticipant = participant;
+            return (): void => undefined;
+        },
+    }} as NodeModule;
     (globalThis as unknown as {window: Window}).window = {
         siyuan: {
             config: {fileTree: {openFilesUseCurrentTab: false}},
@@ -50,6 +99,10 @@ beforeEach(() => {
     testDocument = new TestDocument();
     (globalThis as typeof globalThis & {document: Document}).document = testDocument as unknown as Document;
     getElementImpl = async () => ({ok: false, kind: "response"});
+    lastSurface = undefined;
+    lastParticipant = undefined;
+    openElementCalls = [];
+    surfaceMountError = undefined;
 });
 
 after(() => {
@@ -198,6 +251,16 @@ const supportedTopic = {
     },
 };
 
+const writableTopic = {
+    ...supportedTopic,
+    titleRevision: "rev-title",
+    topicMaterial: {
+        ...supportedTopic.topicMaterial,
+        html: "",
+        revision: "rev-material",
+    },
+};
+
 const createTabFixture = () => {
     const panelElement = testDocument.createElement("div");
     const headElement = testDocument.createElement("div");
@@ -216,6 +279,20 @@ const createTabFixture = () => {
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe("Element tab lifecycle", () => {
+    it("does not expose a reusable tab while the Element detail request is pending", async () => {
+        window.siyuan.config.fileTree.openFilesUseCurrentTab = true;
+        const request = deferred<ElementDetailResult>();
+        getElementImpl = () => request.promise;
+        const fixture = createTabFixture();
+
+        new ElementTab({app: {} as App, tab: fixture.tab, elementId: "topic-id"});
+
+        assert.equal(fixture.headElement.classList.contains("item--unupdate"), false);
+        request.resolve({ok: true, element: supportedTopic});
+        await nextTurn();
+        assert.equal(fixture.headElement.classList.contains("item--unupdate"), true);
+    });
+
     it("ignores a late detail response after its panel leaves the DOM", async () => {
         const request = deferred<ElementDetailResult>();
         getElementImpl = () => request.promise;
@@ -263,5 +340,82 @@ describe("Element tab lifecycle", () => {
         const viewport = fixture.panelElement.querySelector(".symemo-element-tab__viewport") as TestElement;
         assert.equal(viewport.scrollTop, 0);
         assert.deepEqual(fixture.titles, ["Topic"]);
+    });
+
+    it("projects writable surface transition readiness into item replacement eligibility", async () => {
+        window.siyuan.config.fileTree.openFilesUseCurrentTab = true;
+        getElementImpl = async () => ({ok: true, element: writableTopic});
+        const fixture = createTabFixture();
+        new ElementTab({app: {} as App, tab: fixture.tab, elementId: "topic-id"});
+        await nextTurn();
+
+        assert.equal(lastSurface?.mounted, true);
+        assert.equal(fixture.headElement.classList.contains("item--unupdate"), true);
+
+        lastSurface?.onTransitionReadyChange?.(false);
+        assert.equal(fixture.headElement.classList.contains("item--unupdate"), false);
+
+        lastSurface?.onTransitionReadyChange?.(true);
+        assert.equal(fixture.headElement.classList.contains("item--unupdate"), true);
+    });
+
+    it("turns a writable editor mount failure into a retryable stable tab state", async () => {
+        surfaceMountError = new Error("editor chunk unavailable");
+        getElementImpl = async () => ({ok: true, element: writableTopic});
+        const fixture = createTabFixture();
+        const model = new ElementTab({app: {} as App, tab: fixture.tab, elementId: "topic-id"});
+        await nextTurn();
+
+        assert.equal(model.state.phase, "failure");
+        assert.equal(fixture.panelElement.querySelector(".b3-label__text")?.textContent, "Load failed");
+        assert.ok(fixture.panelElement.querySelector("button"));
+        assert.equal(fixture.headElement.classList.contains("item--unupdate"), true);
+    });
+
+    it("keeps a late writable detail inert until the window barrier is cancelled", async () => {
+        const request = deferred<ElementDetailResult>();
+        getElementImpl = () => request.promise;
+        const fixture = createTabFixture();
+        const model = new ElementTab({app: {} as App, tab: fixture.tab, elementId: "topic-id"});
+
+        model.setWindowBarrier(true);
+        request.resolve({ok: true, element: writableTopic});
+        await nextTurn();
+        assert.equal(lastSurface, undefined);
+
+        model.setWindowBarrier(false);
+        await nextTurn();
+        assert.equal(lastSurface?.mounted, true);
+    });
+
+    it("does not make a dirty writable surface reusable when a window barrier is released", async () => {
+        window.siyuan.config.fileTree.openFilesUseCurrentTab = true;
+        getElementImpl = async () => ({ok: true, element: writableTopic});
+        const fixture = createTabFixture();
+        new ElementTab({app: {} as App, tab: fixture.tab, elementId: "topic-id"});
+        await nextTurn();
+
+        lastSurface?.onTransitionReadyChange?.(false);
+        lastParticipant?.setWindowBarrier(true);
+        lastParticipant?.setWindowBarrier(false);
+
+        assert.equal(fixture.headElement.classList.contains("item--unupdate"), false);
+    });
+
+    it("opens the accepted save-as-new Topic by identity", async () => {
+        getElementImpl = async () => ({ok: true, element: writableTopic});
+        const fixture = createTabFixture();
+        const app = {} as App;
+        new ElementTab({app, tab: fixture.tab, elementId: "topic-id"});
+        await nextTurn();
+
+        lastSurface?.onSaveAsNew?.("topic-new");
+
+        assert.deepEqual(openElementCalls, [{
+            app,
+            elementId: "topic-new",
+            intent: "new",
+            source: "other",
+        }]);
     });
 });

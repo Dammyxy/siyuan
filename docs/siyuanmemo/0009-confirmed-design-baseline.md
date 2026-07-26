@@ -1,17 +1,27 @@
 # Confirmed Design Baseline
 
 Date: 2026-07-19
+Updated: 2026-07-25
 
 ## Purpose And Precedence
 
 This document is the compact, authoritative inventory of decisions confirmed before implementation. It exists so conversation compaction, a new agent session, or an older draft cannot silently restore a rejected design.
 
-Detailed behavior remains in documents `0001` through `0010`. When documents conflict, the more specific later decision wins. For storage, sync, recovery, deletion, and file layout, `0008-element-storage-sync-recovery-design.md` is authoritative. For kernel, Scheduler, Session, Ledger, query, transport, and Adapter Interface shape, `0010-deep-module-interface-design.md` is authoritative. `0011-browser-order-and-learning-plan-design.md` is a working proposal only and is not an implementation authority. A proposal may not convert an item under "Not Yet Decided" into an implementation assumption without a new decision record.
+Detailed behavior remains in documents `0001` through `0010`. When documents conflict, the more specific later decision wins. For storage, sync, recovery, deletion, and file layout, `0008-element-storage-sync-recovery-design.md` is authoritative. For kernel, Scheduler, Session, Ledger, query, transport, and Adapter Interface shape, `0010-deep-module-interface-design.md` is authoritative. `0013-delivery-roadmap.md` alone decides delivery sequence and milestone gates without replacing those behavioral or architectural authorities. `0011-browser-order-and-learning-plan-design.md` is a working proposal only and is not an implementation authority. A proposal may not convert an item under "Not Yet Decided" into an implementation assumption without a new decision record.
+
+## Delivery Vocabulary
+
+- Features 001 through 004 are the Engine Foundation: code-backed backend tracers, not a complete production user workflow.
+- Features 005 through 008 form the Dogfood Alpha: native read, Topic capture/edit, Topic Learn/Next, and basic Item creation/review.
+- Feature 009 is the first post-Alpha dependency: the smallest safe `AssetStore` slice for local image intake and native unused-asset protection of `.sme` references.
+- Product v1 is the full capability boundary historically called the MVP in the earlier design documents. Unless a current Feature specification explicitly adopts one of those requirements, an older unqualified MVP list must not expand that Feature.
+- Delivery status, Feature order, and the minimum gate for each Alpha milestone are maintained only in `0013-delivery-roadmap.md`.
 
 ## Product And Platform
 
 - SiYuanMemo is an AGPL-3.0 fork of SiYuan, not a plugin and not a clean-room replacement.
 - The application keeps SiYuan's Go kernel, TypeScript frontend, webpack build, Electron shell, Protyle block editor, block model, backlinks, workspace, assets, history, and synchronization foundations.
+- SuperMemo defines progressive-learning semantics; current SiYuan source defines host interaction and implementation conventions. Feature 006 directly reuses or narrowly adapts SiYuan title editing, transaction serialization, tab lifecycle, menus, close flushing, themes, keyboard behavior, and error presentation instead of creating parallel SiYuanMemo conventions. Element authority still crosses the Learning Engine through typed commands rather than writing `.sme` from copied UI code.
 - The kernel toolchain follows `kernel/go.mod`; the current fork requires Go 1.26 before implementation verification.
 - The learning system is an independent Learning Engine. It does not extend or depend on SiYuan `riff`; `riff` is only an integration reference.
 - The product name and display spelling are `SiYuanMemo`.
@@ -68,15 +78,20 @@ Detailed behavior remains in documents `0001` through `0010`. When documents con
 ## Topic Reading And Editing
 
 - HTML-backed Topic material is medium-cleaned HTML. The MVP preserves useful reading structure and source provenance but not a complete original webpage snapshot.
-- HTML-backed Topics use a dedicated HTML Reader/Editor surface. Block-backed Topics use a Protyle surface and edit the referenced native block directly; Protyle remains the only editor for that block content.
+- HTML-backed Topics use one dedicated, always-editable TinyMCE surface. They have no separate reading/editing modes and persist no mode value. Block-backed Topics use a Protyle surface and edit the referenced native block directly; Protyle remains the only editor for that block content.
 - TinyMCE is the first `TopicHtmlEditorAdapter`; it is replaceable and does not own storage or domain rules.
-- Reading and editing modes share the same Topic payload. Editing remains material cleanup, not note authoring.
+- The same HTML editor remains mounted during ordinary browsing, Topic learning, and layout restoration. Editing remains material cleanup, not note authoring, while the workspace Shell and learning controls remain stable around the changing content Surface.
 - Stable block-level node IDs plus offsets and text quotes anchor extraction highlights, read points, and annotations.
 - `Alt+X` performs explicit extraction from the current selection.
 - Extract creates a child Topic and highlights the source range; it does not create a note block and does not automatically open the child.
 - Split is an explicit child-Topic operation. MVP split is selection-driven; automatic heading/paragraph splitting is later.
 - Extracted or split Topics enter the learning process according to the Topic scheduling policy.
 - Images and formulas remain usable in Topics and Items; formula source is preserved, not only rendered pixels.
+- Feature 006 may retain safe `http/https` image references but rejects `data:`, Base64, `file:`, and raw local paths. Feature 009 adds screenshot paste, image drop, and local image selection through SiYuan's shared asset store; it persists only normalized `assets/...` references and makes native unused-asset discovery count authoritative `.sme` references before cleanup.
+- Feature 006's Elements-dock `+` command immediately creates a real unbound top-level HTML Topic, accepts its initial remembered Topic schedule in the same operation, and opens it in the editor. Empty stored title and empty authoritative HTML are valid; the UI displays localized `Untitled`, editor placeholder markup is not persisted, and abandoning the empty Topic does not delete it automatically. There is no frontend-only draft or delayed materialization step, and later title or body edits do not reinitialize scheduling.
+- Topic HTML saves use an opaque expected material revision. A revision conflict stops automatic saving and retains the complete local editor state without merging or overwriting. The user must either reload the latest authoritative version or create a new Topic from the local content; unresolved conflicts block target changes, surface replacement, and tab closure.
+- Title and HTML material use independent opaque revisions. `RenameElement` conflicts only with another title change, while `SaveTopicHTML` conflicts only with another material change. Both commands reload the latest owning `.sme`, replace only their field, preserve the other field, serialize through the same Engine write ownership, return the new canonical field and revision, and create no scheduling event.
+- Target changes, tab closure, and normal application exit synchronously flush pending Topic saves and wait for in-flight saves. A save failure or revision conflict cancels the close and keeps the editor available for recovery; an already-created empty Topic closes normally and remains authoritative. Feature 006 stores no separate temporary HTML recovery copy, so a crash, power loss, or forced process termination may lose changes still inside the final debounce window.
 
 ## Notes And References
 
@@ -109,7 +124,7 @@ Detailed behavior remains in documents `0001` through `0010`. When documents con
 - All ordinary subset-learning modes exclude Dismissed targets and targets already processed on the same collection learning day. `Add all to outstanding` is a separate explicit operation that may bypass the same-day exclusion; `Review all` does not.
 - `Dismiss` leaves an Element in its current structural location and changes its `lifecycleState`; it does not move it into an automatic category.
 - Dismissing excludes an Element from queues but preserves its adopted schedule, adapter states, and immutable history. Remembering it restores that state and makes it due if overdue. Forgetting returns it to pending and clears current scheduling state while retaining historical events.
-- `Add new` creates only a Topic with zero or one primary `boundTo` relation to the current Concept or Element context. Binding is non-structural and not a backlink; rebinding replaces it, while additional associations use explicit Element links and normal backlinks.
+- `Add new` creates only a Topic. Feature 006's Elements-dock path creates it immediately as an unbound top-level Element. A later contextual Product v1 path may supply zero or one primary `boundTo` relation to the current Concept or Element context. Binding is non-structural and not a backlink; rebinding replaces it, while additional associations use explicit Element links and normal backlinks.
 - Ordinary Topic creation and the default Topic import/extraction path immediately create a `Memorized` Topic and initialize its Topic schedule. This follows modern SuperMemo's `Import`/`Remember extract` behavior and the confirmed modern Add/Insert observation. Only an explicit Queue/Pending creation choice, `Forget`, or a later equivalent command creates or returns a Topic to `Pending`; first processing of that Pending Topic occurs in New Material. Initial Topic interval selection is defined independently by the versioned scheduler policy below rather than implied by lifecycle state.
 - The product-owned `siyuanmemo-topic-initial-v1` policy uniformly selects an integer first interval in `1..15` days for an ordinary remembered Topic and for a Pending Topic when New Material introduces it. The accepted initialization/introduction event records the policy version, selection seed, and resolved `initialIntervalDays`; replay, sync, and projection rebuild use the recorded value and never draw again. A Schedule creation path supplies and records its explicit first interval instead, while a Queue creation path records no schedule until introduction. The `1..15` range follows older published SuperMemo incremental-reading behavior but is explicitly a versioned SiYuanMemo policy because the modern numeric rule is unpublished.
 - The product-owned `siyuanmemo-topic-day-arithmetic-v1` policy records `Last` as the `learningDayId` resolved when Topic initialization, introduction, or `NextTopic` is accepted. It records `Next` as `Last` plus the selected integer interval in calendar learning days, not as `N * 24h` after an event timestamp. A Topic is formally due when the current resolved `learningDayId` reaches or passes `Next`. Events retain their resolved `learningDayId`, so later time-zone or learning-day-boundary configuration changes cannot re-bucket history.
@@ -175,11 +190,11 @@ Detailed behavior remains in documents `0001` through `0010`. When documents con
 - Type, lifecycle, and processing icons use familiar progressive-learning semantics but are redrawn in SiYuan-native style rather than copied bitmap assets.
 - Internal implementation labels such as `ReviewTarget`, `QueueType`, renderer adapter, schedule owner, database paths, and algorithm config filenames are not shown in the normal UI.
 
-## MVP Boundaries
+## Product V1 Boundaries
 
-- The MVP does include the independent scheduler core, Topic and Item ReviewTargets, FSRS adapter, shadow comparator, local interrupted scoped-session recovery, due/subset lookup, Topic `Next`, Item answer reveal and grading, rebuildable index, basic Topic HTML reading/editing, explicit extraction/split, explicit block-to-Element commands, SendToNote, Element references/backlinks, native Element tabs/docks, and a basic Element Browser.
-- The MVP does not include automatic note generation, automatic note-to-card generation, image occlusion, multi-cloze generation, URL fetching, PDF/EPUB readers, browser-extension clipping, complete webpage snapshots, runtime algorithm plugins, the full SM20 five-algorithm weighted policy and optimizer, full neural roam behavior, progressive audio/video implementation, or encrypted notebook support. The weighted policy remains required in a later parity phase.
-- The first Spec Kit tracer is narrower than the MVP: one prepared root Q/A Item, due-only lookup, default Session Start, Show Answer, Grade `0..5`, `fsrs-v1` primary plus `simple-v1` shadow/fallback, durable `.smr` adoption, concurrent-history fixtures, and `memo.db` rebuild. It has named backend routes and no production UI.
+- Product v1 does include the independent scheduler core, Topic and Item ReviewTargets, FSRS adapter, shadow comparator, local interrupted scoped-session recovery, due/subset lookup, Topic `Next`, Item answer reveal and grading, rebuildable index, basic Topic HTML reading/editing, explicit extraction/split, explicit block-to-Element commands, SendToNote, Element references/backlinks, native Element tabs/docks, and a basic Element Browser.
+- Product v1 does not include automatic note generation, automatic note-to-card generation, image occlusion, multi-cloze generation, URL fetching, PDF/EPUB readers, browser-extension clipping, complete webpage snapshots, runtime algorithm plugins, the full SM20 five-algorithm weighted policy and optimizer, full neural roam behavior, progressive audio/video implementation, or encrypted notebook support. The weighted policy remains required in a later parity phase.
+- The first Spec Kit tracer is narrower than Product v1: one prepared root Q/A Item, due-only lookup, default Session Start, Show Answer, Grade `0..5`, `fsrs-v1` primary plus `simple-v1` shadow/fallback, durable `.smr` adoption, concurrent-history fixtures, and `memo.db` rebuild. It has named backend routes and no production UI.
 - Feature 003 is the minimal backend daily-learning slice defined in `0007-mvp-implementation-decisions.md`: Learning Day/Midnight Shift, due Outstanding processing, confirmed Pending introduction, confirmed Final Drill, Topic `Next`, existing Item grading, durable `.smr`, and deterministic `memo.db` rebuild. It does not implement Browser/subset learning, UI, sync hooks, Checkpoints, profile registries, Algorithm Arena, or fields reserved only for those later features.
 - Topic behavior, creation/import, tree mutation, Browser, scoped-session recovery, lifecycle/postpone actions, note/block/assets integration, and actual SiYuan sync hooks are explicitly outside the first tracer.
 

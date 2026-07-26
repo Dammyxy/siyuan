@@ -50,7 +50,7 @@ const closeMenu = (tab: Tab) => {
             label: window.siyuan.languages.closeOthers,
             accelerator: window.siyuan.config.keymap.general.closeOthers.custom,
             click() {
-                closeTabByType(tab, "closeOthers");
+                void closeTabByType(tab, "closeOthers");
             }
         }).element);
         window.siyuan.menus.menu.append(new MenuItem({
@@ -58,7 +58,7 @@ const closeMenu = (tab: Tab) => {
             label: window.siyuan.languages.closeAll,
             accelerator: window.siyuan.config.keymap.general.closeAll.custom,
             click() {
-                closeTabByType(tab, "closeAll");
+                void closeTabByType(tab, "closeAll");
             }
         }).element);
         if (unmodifiedTabs.length > 0) {
@@ -67,7 +67,7 @@ const closeMenu = (tab: Tab) => {
                 label: window.siyuan.languages.closeUnmodified,
                 accelerator: window.siyuan.config.keymap.general.closeUnmodified.custom,
                 click() {
-                    closeTabByType(tab, "other", unmodifiedTabs);
+                    void closeTabByType(tab, "other", unmodifiedTabs);
                 }
             }).element);
         }
@@ -77,7 +77,7 @@ const closeMenu = (tab: Tab) => {
                 label: window.siyuan.languages.closeLeft,
                 accelerator: window.siyuan.config.keymap.general.closeLeft.custom,
                 click: async () => {
-                    closeTabByType(tab, "other", leftTabs);
+                    void closeTabByType(tab, "other", leftTabs);
                 }
             }).element);
         }
@@ -87,7 +87,7 @@ const closeMenu = (tab: Tab) => {
                 label: window.siyuan.languages.closeRight,
                 accelerator: window.siyuan.config.keymap.general.closeRight.custom,
                 click() {
-                    closeTabByType(tab, "other", rightTabs);
+                    void closeTabByType(tab, "other", rightTabs);
                 }
             }).element);
         }

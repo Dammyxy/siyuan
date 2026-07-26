@@ -22,7 +22,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/88250/lute/ast"
 )
@@ -51,18 +50,14 @@ type createHTMLTopicPlan struct {
 }
 
 func (engine *Engine) createHTMLTopic(ctx context.Context, command AddNewTopicCommand) (CreateElementResult, error) {
-	title := strings.TrimSpace(command.Title)
-	if title == "" {
-		return CreateElementResult{}, createHTMLTopicError(ErrInvalidCreateCommand, "Topic title is required", "", "", false, false, nil)
-	}
-	cleanedHTML, err := cleanTopicHTMLFragment(command.HTML)
+	title, err := canonicalizeElementTitle(command.Title)
 	if err != nil {
-		return CreateElementResult{}, createHTMLTopicError(ErrInvalidCreateCommand, "Topic HTML is not renderable", "", "", false, false, err)
+		return CreateElementResult{}, createHTMLTopicError(ErrInvalidCreateCommand, "Topic title is invalid", "", "", false, false, err)
 	}
 	if !engine.schedulerConfigIsCurrent() {
 		return CreateElementResult{}, createHTMLTopicError(ErrHistoryRequiresRepair, "scheduler configuration requires repair", "", "", false, false, nil)
 	}
-	plan, err := engine.planCreateHTMLTopic(title, cleanedHTML)
+	plan, err := engine.planCreateHTMLTopic(title, command.HTML)
 	if err != nil {
 		return CreateElementResult{}, err
 	}
@@ -112,13 +107,21 @@ func (engine *Engine) createHTMLTopic(ctx context.Context, command AddNewTopicCo
 	return result, nil
 }
 
-func (engine *Engine) planCreateHTMLTopic(title, cleanedHTML string) (createHTMLTopicPlan, error) {
+func (engine *Engine) planCreateHTMLTopic(title, rawHTML string) (createHTMLTopicPlan, error) {
 	scan, err := engine.config.scanElements()
 	if err != nil {
 		return createHTMLTopicPlan{}, createHTMLTopicError(ErrHistoryRequiresRepair, "Element source requires repair", "", "", false, false, err)
 	}
 	if len(scan.Diagnostics) != 0 {
 		return createHTMLTopicPlan{}, createHTMLTopicError(ErrHistoryRequiresRepair, "Element source requires repair", "", "", false, false, nil)
+	}
+	cleaned, err := cleanTopicHTMLFragmentWithOptions(rawHTML, topicHTMLCleanOptions{
+		allowEmpty:       true,
+		identityMode:     topicHTMLIdentityGenerate,
+		globalNodeOwners: collectTopicHTMLNodeOwners(scan),
+	})
+	if err != nil {
+		return createHTMLTopicPlan{}, createHTMLTopicError(ErrInvalidCreateCommand, "Topic HTML is not renderable", "", "", false, false, err)
 	}
 	sortRanks, err := engine.config.loadSortRanksForCreate()
 	if err != nil {
@@ -142,12 +145,14 @@ func (engine *Engine) planCreateHTMLTopic(title, cleanedHTML string) (createHTML
 		ID:              elementID,
 		Type:            "topic",
 		Title:           title,
+		TitleRevision:   newElementAuthoringRevisionToken(),
 		ProcessingState: "new",
 		PayloadSpec:     SupportedPayloadSpec,
 		Payload: ElementPayload{Material: &TopicMaterial{
 			Kind:                  "html",
-			HTML:                  cleanedHTML,
+			HTML:                  cleaned.HTML,
 			CleaningPolicyVersion: topicHTMLCleaningPolicyVersion,
+			Revision:              newElementAuthoringRevisionToken(),
 		}},
 	}
 	rootBytes, err := marshalCreateHTMLTopicAuthorityJSON(element, "", "  ")

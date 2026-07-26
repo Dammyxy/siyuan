@@ -65,6 +65,9 @@ func TestCreateHTMLTopicCreatesQueryableRootAndSchedule(t *testing.T) {
 	if material == nil || material.Kind != "html" || material.CleaningPolicyVersion != topicHTMLCleaningPolicyVersion {
 		t.Fatalf("created material = %#v", material)
 	}
+	if element.TitleRevision == "" || material.Revision == "" || element.TitleRevision == material.Revision {
+		t.Fatalf("created revisions title=%q material=%q", element.TitleRevision, material.Revision)
+	}
 	normalizedHTML := feature004NodeIDPattern.ReplaceAllString(material.HTML, `data-symemo-node-id="ID"`)
 	if normalizedHTML != `<h2 data-symemo-node-id="ID">Heading</h2><p data-symemo-node-id="ID" style="color: red">Body</p>` {
 		t.Fatalf("cleaned HTML = %s", normalizedHTML)
@@ -99,9 +102,148 @@ func TestCreateHTMLTopicCreatesQueryableRootAndSchedule(t *testing.T) {
 	if source.ID != elementID || len(source.Relations) != 0 || len(source.Children) != 0 || source.Payload.Material == nil || source.Payload.Material.HTML != material.HTML {
 		t.Fatalf("created source = %#v", source)
 	}
+	if source.TitleRevision != element.TitleRevision || source.Payload.Material.Revision != material.Revision {
+		t.Fatalf("created source revisions = %#v material=%#v", source, source.Payload.Material)
+	}
 	event := eventByID(t, mustEvents(t, config), eventID)
 	if event.Type != "introduceElement" || event.ReviewKind != "introduceTopic" || event.BaseEventID != "" || event.ElementID != elementID || event.After.AdoptedTerminalID != eventID {
 		t.Fatalf("created event = %#v", event)
+	}
+}
+
+func TestCreateHTMLTopicAcceptsExplicitEmptyTitleAndHTML(t *testing.T) {
+	engine, config := newFixtureEngine(t)
+	elementID := "20260725065000-emptytp"
+	eventID := "20260725065001-emptyev"
+	restoreIDs := withCreateHTMLTopicNodeIDs(t, elementID, eventID)
+	defer restoreIDs()
+
+	result, err := engine.CreateElement(context.Background(), CreateElementCommand{
+		Kind:        CreateElementAddNewTopic,
+		AddNewTopic: AddNewTopicCommand{Title: " \t", HTML: "<p><br></p>"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CreateAccepted || !result.ReviewAccepted || result.Topic == nil || result.Topic.Title != "" {
+		t.Fatalf("empty create result = %#v", result)
+	}
+	detail := queryFeature006Element(t, engine, elementID)
+	if detail.Title != "" || detail.TitleRevision == "" || detail.Payload.Material.HTML != "" || detail.Payload.Material.Revision == "" {
+		t.Fatalf("empty detail = %#v", detail)
+	}
+	source := readOptionalFile(t, filepath.Join(config.ElementsRoot(), elementID+".sme"))
+	if !strings.Contains(string(source), `"title": ""`) || !strings.Contains(string(source), `"html": ""`) || !strings.Contains(string(source), `"titleRevision":`) || !strings.Contains(string(source), `"revision":`) {
+		t.Fatalf("empty source omits explicit fields: %s", source)
+	}
+	if countEventsByID(t, config, eventID) != 1 {
+		t.Fatalf("empty create event count = %d", countEventsByID(t, config, eventID))
+	}
+}
+
+func TestCreateHTMLTopicAcceptsWhitespaceEmptyTitleWithNonEmptyHTML(t *testing.T) {
+	engine, _ := newFixtureEngine(t)
+	restoreIDs := withCreateHTMLTopicNodeIDs(t, "20260725065300-wshtml1", "20260725065301-wshtml2")
+	defer restoreIDs()
+
+	result, err := engine.CreateElement(context.Background(), CreateElementCommand{
+		Kind: CreateElementAddNewTopic,
+		AddNewTopic: AddNewTopicCommand{
+			Title: "\u00a0 \t",
+			HTML:  "<p>Body without title</p>",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail := queryFeature006Element(t, engine, result.ElementID)
+	if detail.Title != "" || detail.Payload.Material.HTML == "" || result.Topic == nil || result.Topic.Title != "" {
+		t.Fatalf("whitespace-title create detail=%#v result=%#v", detail, result)
+	}
+}
+
+func TestCreateHTMLTopicRetriesGeneratedMaterialNodeIDOwnedByExistingTopic(t *testing.T) {
+	engine, _ := newFixtureEngine(t)
+	existing := createFeature006Topic(t, engine, "20260725065400-owneraa", "20260725065401-owneree", "Owner", "<p>Owner</p>")
+	existingDetail := queryFeature006Element(t, engine, existing.ElementID)
+	existingNodeID := firstTopicNodeID(t, existingDetail.Payload.Material.HTML)
+	restoreIDs := withCreateHTMLTopicNodeIDs(t, "20260725065402-newtopc", "20260725065403-newtope")
+	defer restoreIDs()
+	previousNodeID := newTopicHTMLNodeID
+	generated := []string{existingNodeID, "20260725065404-newnode"}
+	newTopicHTMLNodeID = func() string {
+		id := generated[0]
+		generated = generated[1:]
+		return id
+	}
+	t.Cleanup(func() { newTopicHTMLNodeID = previousNodeID })
+
+	result, err := engine.CreateElement(context.Background(), CreateElementCommand{
+		Kind:        CreateElementAddNewTopic,
+		AddNewTopic: AddNewTopicCommand{Title: "", HTML: "<p>New body</p>"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail := queryFeature006Element(t, engine, result.ElementID)
+	if strings.Contains(detail.Payload.Material.HTML, existingNodeID) || !strings.Contains(detail.Payload.Material.HTML, "20260725065404-newnode") {
+		t.Fatalf("created HTML used colliding node ID: %s", detail.Payload.Material.HTML)
+	}
+}
+
+func TestCreateHTMLTopicOneHundredEmptyCreationCases(t *testing.T) {
+	engine, config := newFixtureEngine(t)
+	previousElementID, previousEventID := newCreateHTMLTopicElementID, newCreateHTMLTopicEventID
+	elementSequence := 0
+	eventSequence := 0
+	newCreateHTMLTopicElementID = func() string {
+		id := fmt.Sprintf("20260725065100-a%06d", elementSequence)
+		elementSequence++
+		return id
+	}
+	newCreateHTMLTopicEventID = func() string {
+		id := fmt.Sprintf("20260725065100-b%06d", eventSequence)
+		eventSequence++
+		return id
+	}
+	t.Cleanup(func() {
+		newCreateHTMLTopicElementID = previousElementID
+		newCreateHTMLTopicEventID = previousEventID
+	})
+
+	for fixture := 0; fixture < 100; fixture++ {
+		result, err := engine.CreateElement(t.Context(), CreateElementCommand{
+			Kind:        CreateElementAddNewTopic,
+			AddNewTopic: AddNewTopicCommand{Title: "", HTML: ""},
+		})
+		if err != nil {
+			t.Fatalf("empty fixture %d create failed: %v", fixture, err)
+		}
+		detail := queryFeature006Element(t, engine, result.ElementID)
+		if detail.Title != "" || detail.Payload.Material.HTML != "" || detail.TitleRevision == "" || detail.Payload.Material.Revision == "" || countEventsByID(t, config, result.EventID) != 1 {
+			t.Fatalf("empty fixture %d detail=%#v result=%#v", fixture, detail, result)
+		}
+	}
+}
+
+func TestCreateHTMLTopicAcceptsLargeValidHTMLWithoutFeature006Limit(t *testing.T) {
+	engine, _ := newFixtureEngine(t)
+	restoreIDs := withCreateHTMLTopicNodeIDs(t, "20260725065200-largeok", "20260725065201-largeev")
+	defer restoreIDs()
+	var builder strings.Builder
+	for i := 0; i < 2500; i++ {
+		fmt.Fprintf(&builder, `<p>Large valid paragraph %04d with enough text to exceed any small Feature 006 transport threshold.</p>`, i)
+	}
+	result, err := engine.CreateElement(t.Context(), CreateElementCommand{
+		Kind:        CreateElementAddNewTopic,
+		AddNewTopic: AddNewTopicCommand{Title: "Large", HTML: builder.String()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail := queryFeature006Element(t, engine, result.ElementID)
+	if got := strings.Count(detail.Payload.Material.HTML, "<p "); got != 2500 {
+		t.Fatalf("large HTML paragraph count = %d", got)
 	}
 }
 

@@ -3,9 +3,6 @@ import {ipcRenderer} from "electron";
 /// #endif
 import {fetchPost} from "../../util/fetch";
 import {Constants} from "../../constants";
-/// #if !MOBILE
-import {exportLayout} from "../../layout/util";
-/// #endif
 import {exitSiYuan} from "../../dialog/processSystem";
 
 /** 应用 / 关于 / 访问授权等 Tab 中的 system.* 设置项 save */
@@ -37,10 +34,7 @@ export const sendAppSetting = (controlId: string, value: unknown) => {
                 /// #if MOBILE
                 void exitSiYuan();
                 /// #else
-                void exportLayout({
-                    errorExit: true,
-                    cb: exitSiYuan,
-                });
+                void exitSiYuan();
                 /// #endif
             });
             break;
@@ -51,10 +45,7 @@ export const sendAppSetting = (controlId: string, value: unknown) => {
                 /// #if MOBILE
                 void exitSiYuan();
                 /// #else
-                void exportLayout({
-                    errorExit: true,
-                    cb: exitSiYuan,
-                });
+                void exitSiYuan();
                 /// #endif
             });
             break;

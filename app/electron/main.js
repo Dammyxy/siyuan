@@ -39,7 +39,11 @@ const path = require("path");
 const fs = require("fs");
 const gNet = require("net");
 const childProcess = require("child_process");
+const nodeCrypto = require("crypto");
 const remote = require("@electron/remote/main");
+const {routeClipboardRequest} = require("./clipboard");
+const {createSymemoAuthoringTransitionBroker} = require("./symemoAuthoringTransition");
+const {createSymemoTabTransferBroker} = require("./symemoTabTransfer");
 
 process.noAsar = true;
 const appDir = path.dirname(app.getAppPath());
@@ -72,6 +76,9 @@ let gracefulSystemShutdownPromise;
 let keepAppOpenDuringSystemShutdown = false;
 let updateInstallPromise;
 let keepAppOpenDuringUpdate = false;
+let markPendingAuthoringWindowForLoad = () => true;
+let symemoAuthoringBroker;
+const updateInstallOwners = new Map();
 const openDialogSingletons = new Set();
 const isOpenAsHidden = function () {
     return 1 === workspaces.length && openAsHidden;
@@ -123,7 +130,7 @@ if (!app.isPackaged) {
 
 for (let i = argStart; i < process.argv.length; i++) {
     let arg = process.argv[i];
-    if (arg.startsWith("--workspace=") || arg.startsWith("--openAsHidden") || arg.startsWith("--port=") || arg.startsWith("--safe-mode=") || arg.startsWith("--lang=") || arg.startsWith("siyuan://")) {
+    if (arg.startsWith("--workspace=") || arg.startsWith("--openAsHidden") || arg.startsWith("--port=") || arg.startsWith("--safe-mode=") || arg.startsWith("--readonly=") || arg === "--readonly" || arg.startsWith("--lang=") || arg.startsWith("siyuan://")) {
         // 跳过内置参数
         if (arg.startsWith("--openAsHidden")) {
             openAsHidden = true;
@@ -150,8 +157,11 @@ try {
 // 解析命令行参数，参数需以 `name=value` 形式传入 https://github.com/siyuan-note/siyuan/issues/14748
 const getArg = (name) => {
     for (let i = 0; i < process.argv.length; i++) {
-        if (process.argv[i].startsWith(name)) {
-            return process.argv[i].split("=")[1];
+        if (process.argv[i] === name) {
+            return "true";
+        }
+        if (process.argv[i].startsWith(name + "=")) {
+            return process.argv[i].split("=").slice(1).join("=");
         }
     }
 };
@@ -615,7 +625,7 @@ const coordinateUpdateInstall = async (request) => {
     app.exit();
 };
 
-const beginUpdateInstall = (event, data) => {
+const beginUpdateInstall = (event, data, validatedRequest) => {
     if (updateInstallPromise) {
         writeLog("ignored duplicate update install request");
         return true;
@@ -625,7 +635,7 @@ const beginUpdateInstall = (event, data) => {
         return false;
     }
 
-    const request = validateUpdateInstallRequest(event, data);
+    const request = validatedRequest || validateUpdateInstallRequest(event, data);
     if (!request) {
         return false;
     }
@@ -640,6 +650,28 @@ const beginUpdateInstall = (event, data) => {
     });
     return true;
 };
+
+const hasPendingUpdateInstallReservation = () => Array.from(updateInstallOwners.values())
+    .some((owner) => owner.phase === "preflight");
+
+const releaseUpdateInstallPreflight = (token, senderId, port) => {
+    const owner = updateInstallOwners.get(token);
+    if (!owner || owner.phase !== "preflight" ||
+        (senderId !== undefined && owner.senderId !== senderId) ||
+        (port !== undefined && owner.port.toString() !== port.toString())) {
+        return;
+    }
+    if (owner.timeout) {
+        clearTimeout(owner.timeout);
+    }
+    updateInstallOwners.delete(token);
+    return owner;
+};
+
+const sameUpdateInstallRequest = (left, right) => Boolean(left && right &&
+    left.initiatingPort.toString() === right.initiatingPort.toString() &&
+    left.setCurrentWorkspace === right.setCurrentWorkspace &&
+    left.workspaceDir === right.workspaceDir);
 
 const getSystemShutdownPorts = () => {
     const ports = new Set();
@@ -706,6 +738,10 @@ const beginGracefulSystemShutdown = () => {
     if (gracefulSystemShutdownPromise || systemShutdownState === systemShutdownForced) {
         return;
     }
+    if (hasPendingUpdateInstallReservation()) {
+        writeLog("ignored graceful system shutdown while an update install is reserved");
+        return;
+    }
 
     systemShutdownState = systemShutdownEnding;
     const ports = getSystemShutdownPorts();
@@ -747,6 +783,12 @@ const beginForcedSystemShutdown = () => {
         return;
     }
 
+    for (const [token, owner] of updateInstallOwners) {
+        if (owner.phase === "preflight") {
+            releaseUpdateInstallPreflight(token, owner.senderId, owner.port);
+            void symemoAuthoringBroker?.cancel({token, senderId: owner.senderId, port: owner.port});
+        }
+    }
     systemShutdownState = systemShutdownForced;
     keepAppOpenDuringSystemShutdown = false;
     getSystemShutdownPorts().forEach((port) => {
@@ -919,8 +961,13 @@ const initMainWindow = (currentKernelPort = kernelPort) => {
     // 加载主界面。setProxy 用超时兜底包装：Electron 在某些系统代理配置下 session.setProxy 可能永久
     // pending（既不 resolve 也不 reject），会导致 loadURL 永不执行，主窗口卡在启动页无法显示。
     // 这里无论 setProxy 是否完成，最多等待 5 秒后强制加载主界面。
+    const mainURL = getServer(currentKernelPort) + "/stage/build/app/?v=" + Date.now();
+    if (!markPendingAuthoringWindowForLoad(currentWindow, mainURL)) {
+        currentWindow.destroy();
+        return false;
+    }
     const loadMainURL = () => {
-        currentWindow.loadURL(getServer(currentKernelPort) + "/stage/build/app/?v=" + Date.now());
+        currentWindow.loadURL(mainURL);
     };
     net.fetch(getServer(currentKernelPort) + "/api/system/getNetwork", {method: "POST"}).then((response) => {
         return response.json();
@@ -1058,6 +1105,7 @@ const initMainWindow = (currentKernelPort = kernelPort) => {
             bootWindow.destroy();
         }
     });
+    return true;
 };
 
 const showWindow = (wnd) => {
@@ -1071,7 +1119,7 @@ const showWindow = (wnd) => {
     wnd.show();
 };
 
-const initKernel = (workspace, port, lang, safeMode) => {
+const initKernel = (workspace, port, lang, safeMode, readOnly) => {
     return new Promise(async (resolve) => {
         bootWindow = new BrowserWindow({
             show: false,
@@ -1146,6 +1194,9 @@ const initKernel = (workspace, port, lang, safeMode) => {
         }
         if (safeMode) {
             cmds.push("--safe-mode", "true");
+        }
+        if (readOnly) {
+            cmds.push("--readonly", "true");
         }
         let cmd = `ui version [${appVer}], booting kernel [${kernelPath} ${cmds.join(" ")}]`;
         writeLog(cmd);
@@ -1393,6 +1444,314 @@ app.whenReady().then(() => {
     const getWindowByContentId = (id) => {
         return BrowserWindow.getAllWindows().find((win) => win.webContents.id === id);
     };
+    const getAuthoringSenderPort = (sender) => {
+        try {
+            return new URL(sender.getURL()).port;
+        } catch (e) {
+            return "";
+        }
+    };
+    const registeredAuthoringWindows = new Map();
+    const pendingAuthoringWindows = new Map();
+    const authoringWindowCleanupBound = new Set();
+    let symemoTabTransferBroker;
+    const pendingAuthoringReplies = new Map();
+    const workspaceOpenActions = new Map();
+    const unregisterAuthoringWindow = (windowId) => {
+        registeredAuthoringWindows.delete(windowId);
+        pendingAuthoringWindows.delete(windowId);
+        authoringWindowCleanupBound.delete(windowId);
+        for (const [token, action] of workspaceOpenActions) {
+            if (action.senderId === windowId) {
+                workspaceOpenActions.delete(token);
+            }
+        }
+        for (const [token, owner] of updateInstallOwners) {
+            if (owner.senderId === windowId && owner.phase === "preflight") {
+                void symemoAuthoringBroker?.cancel({token, senderId: owner.senderId, port: owner.port}).then((cancelled) => {
+                    if (cancelled) {
+                        releaseUpdateInstallPreflight(token, owner.senderId, owner.port);
+                    }
+                });
+            }
+        }
+        symemoAuthoringBroker?.unregister({senderId: windowId});
+        void symemoTabTransferBroker?.unregister({senderId: windowId});
+        for (const [requestId, pending] of pendingAuthoringReplies) {
+            if (pending.windowId === windowId) {
+                pendingAuthoringReplies.delete(requestId);
+                clearTimeout(pending.timeout);
+                pending.resolve({allowed: false, reason: "unavailable"});
+            }
+        }
+    };
+    const bindAuthoringWindowCleanup = (win) => {
+        const windowId = win.webContents.id;
+        if (authoringWindowCleanupBound.has(windowId)) {
+            return;
+        }
+        authoringWindowCleanupBound.add(windowId);
+        win.webContents.once("destroyed", () => unregisterAuthoringWindow(windowId));
+    };
+    const markPendingAuthoringWindow = (win, url) => {
+        let port = "";
+        try {
+            port = new URL(url).port;
+        } catch (e) {
+            return false;
+        }
+        if (!port) {
+            return false;
+        }
+        const windowInfo = {id: win.webContents.id, port, kind: "app"};
+        if (symemoAuthoringBroker && !symemoAuthoringBroker.markPending(windowInfo)) {
+            return false;
+        }
+        pendingAuthoringWindows.set(windowInfo.id, windowInfo);
+        bindAuthoringWindowCleanup(win);
+        return true;
+    };
+    markPendingAuthoringWindowForLoad = markPendingAuthoringWindow;
+    const createDetachedWindow = (data, show = true) => {
+        const mainWindow = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+        const mainBounds = mainWindow.getBounds();
+        const mainScreen = screen.getDisplayNearestPoint({x: mainBounds.x, y: mainBounds.y});
+        const win = new BrowserWindow({
+            title: "SiYuan",
+            show,
+            trafficLightPosition: {x: 8, y: 13},
+            width: Math.floor(data.width || mainScreen.size.width * 0.7),
+            height: Math.floor(data.height || mainScreen.size.height * 0.9),
+            minWidth: 493,
+            minHeight: 376,
+            fullscreenable: true,
+            frame: "darwin" === process.platform,
+            icon: path.join(appDir, "stage", "icon-large.png"),
+            titleBarStyle: "hidden",
+            webPreferences: {
+                contextIsolation: false,
+                nodeIntegration: true,
+                webviewTag: true,
+                webSecurity: false,
+                autoplayPolicy: "user-gesture-required" // 桌面端禁止自动播放多媒体 https://github.com/siyuan-note/siyuan/issues/7587
+            },
+        });
+        remote.enable(win.webContents);
+        if (data.position) {
+            win.setPosition(data.position.x, data.position.y);
+        } else {
+            win.center();
+        }
+        win.setAlwaysOnTop(data.alwaysOnTop);
+        win.webContents.userAgent = "SiYuan/" + appVer + " https://b3log.org/siyuan Electron " +
+            win.webContents.userAgent;
+        win.webContents.session.setSpellCheckerLanguages(["en-US"]);
+        if (!markPendingAuthoringWindow(win, data.url)) {
+            win.destroy();
+            return undefined;
+        }
+        win.loadURL(data.url);
+        windowNavigate(win, "window");
+        win.on("close", (event) => {
+            if (win && !win.isDestroyed()) {
+                win.webContents.send("siyuan-save-close");
+            }
+            event.preventDefault();
+        });
+        const targetScreen = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+        if (mainScreen.id !== targetScreen.id) {
+            win.setBounds(targetScreen.workArea);
+        }
+        return win;
+    };
+    const listAuthoringWindows = () => Array.from(registeredAuthoringWindows.values());
+    const sendAuthoringTransitionEvent = (windowId, payload) => {
+        const wnd = getWindowByContentId(windowId);
+        if (!wnd || wnd.isDestroyed()) {
+            return Promise.resolve({allowed: false, reason: "unavailable"});
+        }
+        const replyAction = {prepare: "prepared", commit: "committed", cancel: "cancelled"}[payload.action];
+        if (!replyAction) {
+            return Promise.resolve({allowed: false, reason: "unavailable"});
+        }
+        const requestId = (payload.requestId || payload.action) + ":" + windowId + ":" + payload.token;
+        return new Promise((resolve) => {
+            const timeout = setTimeout(() => {
+                const pending = pendingAuthoringReplies.get(requestId);
+                if (!pending) {
+                    return;
+                }
+                pendingAuthoringReplies.delete(requestId);
+                pending.resolve({allowed: false, reason: "unavailable"});
+            }, 30000);
+            pendingAuthoringReplies.set(requestId, {resolve, token: payload.token, windowId, replyAction, timeout});
+            wnd.webContents.send("siyuan-symemo-authoring-transition-event", Object.assign({}, payload, {requestId}));
+        });
+    };
+    symemoAuthoringBroker = createSymemoAuthoringTransitionBroker({
+        createToken: () => nodeCrypto.randomBytes(16).toString("hex"),
+        listWindows: listAuthoringWindows,
+        send: sendAuthoringTransitionEvent,
+        log: writeLog,
+    });
+    symemoTabTransferBroker = createSymemoTabTransferBroker({
+        createToken: () => nodeCrypto.randomBytes(16).toString("hex"),
+        listWindows: listAuthoringWindows,
+        createDestination(request) {
+            const sourceWindow = getWindowByContentId(request.sourceId);
+            if (!sourceWindow || sourceWindow.isDestroyed()) {
+                return undefined;
+            }
+            const sourceURL = new URL(sourceWindow.getURL());
+            const url = sourceURL.origin + "/stage/build/app/window.html?v=" + appVer +
+                "&symemoTransferId=" + encodeURIComponent(request.transferId);
+            const destination = createDetachedWindow(Object.assign({}, request.options, {url}), false);
+            return destination?.webContents.id;
+        },
+        showDestination(windowId) {
+            const wnd = getWindowByContentId(windowId);
+            if (wnd && !wnd.isDestroyed()) {
+                wnd.show();
+                wnd.focus();
+            }
+        },
+        destroyDestination(windowId) {
+            const wnd = getWindowByContentId(windowId);
+            if (wnd && !wnd.isDestroyed()) {
+                wnd.destroy();
+            }
+        },
+        send(windowId, payload) {
+            const wnd = getWindowByContentId(windowId);
+            if (wnd && !wnd.isDestroyed()) {
+                wnd.webContents.send("siyuan-symemo-tab-transfer-event", payload);
+                return Promise.resolve({ok: true});
+            }
+            return Promise.resolve({ok: false});
+        },
+        log: writeLog,
+    });
+    ipcMain.handle("siyuan-symemo-authoring-transition", async (event, data) => {
+        if (!data || !data.action) {
+            return {allowed: false, reason: "unavailable"};
+        }
+        if (data.action === "register") {
+            const port = getAuthoringSenderPort(event.sender);
+            const wnd = getWindowByContentId(event.sender.id);
+            if (!port || !wnd || wnd.isDestroyed() || !symemoAuthoringBroker.register({
+                senderId: event.sender.id,
+                port,
+                kind: "app",
+            })) {
+                return false;
+            }
+            const windowInfo = {id: event.sender.id, port, kind: "app"};
+            pendingAuthoringWindows.delete(event.sender.id);
+            registeredAuthoringWindows.set(event.sender.id, windowInfo);
+            bindAuthoringWindowCleanup(wnd);
+            return true;
+        }
+        if (["prepared", "committed", "cancelled"].includes(data.action)) {
+            const pending = pendingAuthoringReplies.get(data.requestId);
+            if (pending && pending.windowId === event.sender.id && pending.token === data.token &&
+                pending.replyAction === data.action) {
+                pendingAuthoringReplies.delete(data.requestId);
+                clearTimeout(pending.timeout);
+                pending.resolve(data.action === "prepared" ? data.result : {allowed: true});
+                return true;
+            }
+            return false;
+        }
+        if (data.action === "begin") {
+            const senderPort = getAuthoringSenderPort(event.sender);
+            if (!senderPort) {
+                return {allowed: false, reason: "unavailable"};
+            }
+            return symemoAuthoringBroker.begin({
+                senderId: event.sender.id,
+                requestId: data.requestId,
+                intent: data.intent,
+                port: getAuthoringSenderPort(event.sender),
+            });
+        }
+        if (data.action === "commit") {
+            return symemoAuthoringBroker.commit({
+                token: data.token,
+                senderId: event.sender.id,
+                port: getAuthoringSenderPort(event.sender),
+            });
+        }
+        if (data.action === "cancel") {
+            const senderPort = getAuthoringSenderPort(event.sender);
+            const cancelled = await symemoAuthoringBroker.cancel({
+                token: data.token,
+                senderId: event.sender.id,
+                port: senderPort,
+            });
+            if (cancelled) {
+                releaseUpdateInstallPreflight(data.token, event.sender.id, senderPort);
+            }
+            return cancelled;
+        }
+        return {allowed: false, reason: "unavailable"};
+    });
+    ipcMain.handle("siyuan-symemo-tab-transfer", async (event, data) => {
+        if (!data || !data.action) {
+            return false;
+        }
+        if (data.action === "reserve") {
+            return symemoTabTransferBroker.reserve({
+                senderId: event.sender.id,
+                port: getAuthoringSenderPort(event.sender),
+                offerId: data.offerId,
+            });
+        }
+        if (data.action === "claim") {
+            return symemoTabTransferBroker.claim({
+                senderId: event.sender.id,
+                port: getAuthoringSenderPort(event.sender),
+                transferId: data.transferId,
+                offerId: data.offerId,
+            });
+        }
+        if (data.action === "ready") {
+            return symemoTabTransferBroker.ready({
+                senderId: event.sender.id,
+                transferId: data.transferId,
+                handoff: data.handoff === true,
+            });
+        }
+        if (data.action === "source-committed") {
+            return symemoTabTransferBroker.sourceCommitted({senderId: event.sender.id, transferId: data.transferId, identity: data.identity});
+        }
+        if (data.action === "materialized") {
+            return symemoTabTransferBroker.materialized({senderId: event.sender.id, transferId: data.transferId});
+        }
+        if (data.action === "materialization-failed") {
+            return symemoTabTransferBroker.materializationFailed({senderId: event.sender.id, transferId: data.transferId});
+        }
+        if (data.action === "cancel") {
+            return symemoTabTransferBroker.cancel({senderId: event.sender.id, transferId: data.transferId});
+        }
+        if (data.action === "open-new-window") {
+            const senderPort = getAuthoringSenderPort(event.sender);
+            if (!senderPort || typeof data.offerId !== "string" || !data.offerId) {
+                return false;
+            }
+            return symemoTabTransferBroker.openNewWindow({
+                senderId: event.sender.id,
+                port: senderPort,
+                offerId: data.offerId,
+                options: {
+                    position: data.position,
+                    width: data.width,
+                    height: data.height,
+                    alwaysOnTop: !!data.alwaysOnTop,
+                },
+            });
+        }
+        return false;
+    });
     ipcMain.on("siyuan-context-menu", (event, langs) => {
         const template = [new MenuItem({
             role: "undo", label: langs.undo
@@ -1425,8 +1784,9 @@ app.whenReady().then(() => {
         app.exit();
     });
     ipcMain.handle("siyuan-get", (event, data) => {
-        if (data.cmd === "clipboardRead") {
-            return clipboard.read(data.format);
+        const clipboardRequest = routeClipboardRequest(clipboard, data);
+        if (clipboardRequest.handled) {
+            return clipboardRequest.value;
         }
         if (data.cmd === "showOpenDialog") {
             if (data.singleton) {
@@ -1743,11 +2103,97 @@ app.whenReady().then(() => {
         printWin.loadURL(data);
         windowNavigate(printWin, "export");
     });
-    ipcMain.on("siyuan-quit", (event, port) => {
-        exitApp(port);
+    ipcMain.on("siyuan-quit", (event, data) => {
+        const senderPort = getAuthoringSenderPort(event.sender);
+        if (data && typeof data === "object") {
+            if (!senderPort || !symemoAuthoringBroker.consumeCommitted({
+                token: data.token,
+                senderId: event.sender.id,
+                port: senderPort,
+                allowedKinds: ["application-exit", "workspace-replace"],
+            })) {
+                writeLog("rejected normal quit without matching committed authoring owner [webContentsId=" +
+                    event.sender.id + "]");
+                return;
+            }
+            exitApp(senderPort);
+            return;
+        }
+        exitApp(senderPort || data);
     });
     ipcMain.handle("siyuan-install-update", (event, data) => {
-        return beginUpdateInstall(event, data);
+        const senderPort = getAuthoringSenderPort(event.sender);
+        const request = validateUpdateInstallRequest(event, data);
+        if (data?.phase === "preflight") {
+            if (updateInstallPromise || systemShutdownState !== systemShutdownNone || !senderPort || !request ||
+                !symemoAuthoringBroker.authorizePrepared({
+                    token: data.token,
+                    senderId: event.sender.id,
+                    port: senderPort,
+                    intent: {kind: "update-install", requester: "update-install"},
+                })) {
+                return false;
+            }
+            const existingOwner = updateInstallOwners.get(data.token);
+            if (existingOwner) {
+                return existingOwner.phase === "preflight" && existingOwner.senderId === event.sender.id &&
+                    existingOwner.port.toString() === senderPort.toString() &&
+                    sameUpdateInstallRequest(existingOwner.request, request);
+            }
+            if (updateInstallOwners.size > 0) {
+                return false;
+            }
+            const timeout = setTimeout(() => {
+                void symemoAuthoringBroker.cancel({
+                    token: data.token,
+                    senderId: event.sender.id,
+                    port: senderPort,
+                }).then((cancelled) => {
+                    if (cancelled) {
+                        releaseUpdateInstallPreflight(data.token, event.sender.id, senderPort);
+                    }
+                });
+            }, 30000);
+            timeout.unref?.();
+            updateInstallOwners.set(data.token, {
+                phase: "preflight",
+                token: data.token,
+                senderId: event.sender.id,
+                port: senderPort,
+                request,
+                timeout,
+            });
+            return true;
+        }
+        if (data?.phase !== "start") {
+            return false;
+        }
+        const existingOwner = updateInstallOwners.get(data.token);
+        if (!existingOwner || existingOwner.senderId !== event.sender.id ||
+            existingOwner.port.toString() !== senderPort.toString()) {
+            return false;
+        }
+        if (existingOwner.phase === "started") {
+            return true;
+        }
+        if (existingOwner.phase !== "preflight" || !request || !sameUpdateInstallRequest(existingOwner.request, request) ||
+            !symemoAuthoringBroker.consumeCommitted({
+                token: data.token,
+                senderId: event.sender.id,
+                port: senderPort,
+                allowedKinds: ["update-install"],
+            })) {
+            return false;
+        }
+        const accepted = beginUpdateInstall(event, data, existingOwner.request);
+        if (accepted) {
+            clearTimeout(existingOwner.timeout);
+            existingOwner.timeout = undefined;
+            existingOwner.phase = "started";
+        } else {
+            releaseUpdateInstallPreflight(data.token, event.sender.id, senderPort);
+        }
+        return accepted;
     });
     ipcMain.on("siyuan-show-window", (event) => {
         const mainWindow = getWindowByContentId(event.sender.id);
@@ -1761,70 +2207,56 @@ app.whenReady().then(() => {
         mainWindow.show();
     });
     ipcMain.on("siyuan-open-window", (event, data) => {
-        const mainWindow = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
-        const mainBounds = mainWindow.getBounds();
-        const mainScreen = screen.getDisplayNearestPoint({x: mainBounds.x, y: mainBounds.y});
-        const win = new BrowserWindow({
-            title: "SiYuan",
-            show: true,
-            trafficLightPosition: {x: 8, y: 13},
-            width: Math.floor(data.width || mainScreen.size.width * 0.7),
-            height: Math.floor(data.height || mainScreen.size.height * 0.9),
-            minWidth: 493,
-            minHeight: 376,
-            fullscreenable: true,
-            frame: "darwin" === process.platform,
-            icon: path.join(appDir, "stage", "icon-large.png"),
-            titleBarStyle: "hidden",
-            webPreferences: {
-                contextIsolation: false,
-                nodeIntegration: true,
-                webviewTag: true,
-                webSecurity: false,
-                autoplayPolicy: "user-gesture-required" // 桌面端禁止自动播放多媒体 https://github.com/siyuan-note/siyuan/issues/7587
-            },
-        });
-        remote.enable(win.webContents);
-
-        if (data.position) {
-            win.setPosition(data.position.x, data.position.y);
-        } else {
-            win.center();
-        }
-        win.setAlwaysOnTop(data.alwaysOnTop);
-        win.webContents.userAgent = "SiYuan/" + appVer + " https://b3log.org/siyuan Electron " + win.webContents.userAgent;
-        win.webContents.session.setSpellCheckerLanguages(["en-US"]);
-        win.loadURL(data.url);
-        windowNavigate(win, "window");
-        win.on("close", (event) => {
-            if (win && !win.isDestroyed()) {
-                win.webContents.send("siyuan-save-close");
-            }
-            event.preventDefault();
-        });
-        const targetScreen = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-        if (mainScreen.id !== targetScreen.id) {
-            win.setBounds(targetScreen.workArea);
-        }
+        createDetachedWindow(data);
     });
-    ipcMain.on("siyuan-open-workspace", (event, data) => {
+    ipcMain.handle("siyuan-open-workspace", async (event, data) => {
         if (updateInstallPromise) {
             writeLog("ignored opening workspace while installing update");
-            return;
+            return false;
         }
-        const foundWorkspace = workspaces.find((item) => {
-            if (item.workspaceDir === data.workspace) {
-                showWindow(item.browserWindow);
-                return true;
-            }
-        });
-        if (!foundWorkspace) {
-            initKernel(data.workspace, "", "").then((startedKernelPort) => {
-                if (startedKernelPort) {
-                    initMainWindow(startedKernelPort);
+        const senderPort = getAuthoringSenderPort(event.sender);
+        if (!senderPort || !data || typeof data.workspace !== "string" || !data.workspace.trim() ||
+            typeof data.requester !== "string" || !symemoAuthoringBroker.authorizePrepared({
+                token: data.token,
+                senderId: event.sender.id,
+                port: senderPort,
+                intent: {kind: "workspace-open", target: data.workspace, requester: data.requester},
+            })) {
+            writeLog("rejected workspace open without matching prepared authoring owner [webContentsId=" +
+                event.sender.id + "]");
+            return false;
+        }
+        const existingAction = workspaceOpenActions.get(data.token);
+        if (existingAction && existingAction.senderId === event.sender.id && existingAction.port === senderPort) {
+            return existingAction.promise;
+        }
+        const promise = (async () => {
+            const foundWorkspace = workspaces.find((item) => {
+                if (item.workspaceDir === data.workspace) {
+                    showWindow(item.browserWindow);
+                    return true;
                 }
             });
-        }
+            if (foundWorkspace) {
+                return true;
+            }
+            const startedKernelPort = await initKernel(data.workspace, "", "");
+            if (!startedKernelPort) {
+                return false;
+            }
+            if (!initMainWindow(startedKernelPort)) {
+                requestKernelExit(startedKernelPort, {force: true, setCurrentWorkspace: false});
+                exitApp(startedKernelPort);
+                return false;
+            }
+            return true;
+        })().finally(() => {
+            if (workspaceOpenActions.get(data.token)?.promise === promise) {
+                workspaceOpenActions.delete(data.token);
+            }
+        });
+        workspaceOpenActions.set(data.token, {senderId: event.sender.id, port: senderPort, promise});
+        return promise;
     });
     ipcMain.handle("siyuan-init", async (event, data) => {
         const exitWS = workspaces.find(item => {
@@ -2089,11 +2521,15 @@ app.whenReady().then(() => {
         if (safeMode) {
             writeLog("got arg [--safe-mode=true]");
         }
+        const readOnly = getArg("--readonly") === "true";
+        if (readOnly) {
+            writeLog("got arg [--readonly=true]");
+        }
         const lang = getArg("--lang") || "";
         if (lang) {
             writeLog("got arg [--lang=" + lang + "]");
         }
-        initKernel(workspace, port, lang, safeMode).then((startedKernelPort) => {
+        initKernel(workspace, port, lang, safeMode, readOnly).then((startedKernelPort) => {
             if (startedKernelPort) {
                 initMainWindow(startedKernelPort);
             }
@@ -2200,6 +2636,10 @@ app.on("second-instance", (event, argv) => {
     } else {
         lang = "";
     }
+    const readOnly = argv.some((arg) => arg === "--readonly" || arg === "--readonly=true");
+    if (readOnly) {
+        writeLog("got second-instance arg [--readonly=true]");
+    }
     const foundWorkspace = workspaces.find(item => {
         if (item.browserWindow && !item.browserWindow.isDestroyed()) {
             if (workspace && workspace === item.workspaceDir) {
@@ -2212,7 +2652,7 @@ app.on("second-instance", (event, argv) => {
         return;
     }
     if (workspace) {
-        initKernel(workspace, port, lang).then((startedKernelPort) => {
+        initKernel(workspace, port, lang, false, readOnly).then((startedKernelPort) => {
             if (startedKernelPort) {
                 initMainWindow(startedKernelPort);
             }

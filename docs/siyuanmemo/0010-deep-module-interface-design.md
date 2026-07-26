@@ -1,6 +1,7 @@
 # Deep Module Interface Design
 
 Date: 2026-07-19
+Updated: 2026-07-25
 
 ## Decision And Precedence
 
@@ -91,6 +92,8 @@ For every destructive multi-file command, the internal Element storage implement
 If a later authority write fails after an earlier one completed, the command returns `element-write-partial`. The Runtime gates subsequent calls from the stale Engine, waits for the triggering lease to release, and performs one internal rebuild from actual authority. It never auto-restores history or presents the command as successful. Startup likewise validates current files and leaves repair explicit.
 
 Fine-grained TinyMCE operations such as deleting before the cursor, inserting a web link, or changing inline formatting remain editor-local operations. The kernel receives the resulting material through `SaveTopicHTML`, validates and normalizes it, and persists one coherent change.
+
+Feature 006 pulls forward only the minimum `RenameElement` slice required by SiYuan-style editable Topic titles. Title and HTML material carry independent opaque revisions. `RenameElement` validates the observed title revision and replaces only the title; `SaveTopicHTML` validates the observed material revision and replaces only the HTML material. Each command reloads the latest owning `.sme`, preserves the other field, serializes under the same root-mutation ownership, returns the canonical changed field plus its new revision, and refreshes projection without appending an `.smr` scheduling event. Same-field stale writes conflict; unrelated title and body edits may both succeed.
 
 Editing a Block-backed Topic remains a native Protyle transaction against the referenced `.sy` block. It does not pass through `SaveTopicHTML` and does not rewrite the Topic `.sme` payload with a second copy of the block body. Changes to the block do not silently create scheduling events.
 
@@ -257,7 +260,7 @@ The Engine reaches existing SiYuan behavior through narrow capability Adapters:
 
 Production Adapters call SiYuan kernel behavior. Tests use in-memory Adapters, making these real seams. SiYuanMemo must not create a broad `SiYuanBridge` whose Interface mirrors unrelated `kernel/model` functions.
 
-The frontend `ContentSurfaceHost` keeps the SiYuanMemo workspace Shell stable and selects a real surface Adapter by target source and workflow: HTML Topic Reader/Editor, Protyle block surface, Item HTML Editor, Item review renderer, or future media surfaces. These surfaces own presentation and editor-local operations; Engine commands own Element persistence, scheduling, and cross-module workflows.
+The frontend `ContentSurfaceHost` keeps the SiYuanMemo workspace Shell stable and selects a real surface Adapter by target source and workflow: one always-editable HTML Topic surface, a Protyle block surface, an Item HTML Editor, an Item review renderer, or future media surfaces. The HTML Topic surface does not vary between browsing and learning and has no read/edit mode state. These surfaces own presentation and editor-local operations; Engine commands own Element persistence, scheduling, and cross-module workflows.
 
 ## Query And Index Implementation
 

@@ -129,6 +129,9 @@ func copyElementTreeFixtureWorkspace(t *testing.T) Config {
 	t.Helper()
 	config := copyFixtureWorkspace(t)
 	copyTestTree(t, filepath.Join("testdata", "elements"), config.ElementsRoot())
+	if err := os.Remove(filepath.Join(config.ElementsRoot(), "20260725060000-feat006.sme")); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 	return config
 }
 
@@ -293,6 +296,15 @@ func withCreateHTMLTopicAuthorityFault(t *testing.T, stage string, err error) fu
 		return nil
 	}
 	restore := func() { createHTMLTopicAuthorityFault = previous }
+	t.Cleanup(restore)
+	return restore
+}
+
+func withChangeElementRootWriteFault(t *testing.T, fault func(string, []byte) error) func() {
+	t.Helper()
+	previous := writeChangeElementRootFile
+	writeChangeElementRootFile = fault
+	restore := func() { writeChangeElementRootFile = previous }
 	t.Cleanup(restore)
 	return restore
 }

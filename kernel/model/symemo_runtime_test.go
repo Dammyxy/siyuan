@@ -702,6 +702,187 @@ func TestSymemoRuntimeCreateElementUsesLeaseAndPublishedProjection(t *testing.T)
 	}
 }
 
+func TestSymemoRuntimeChangeElementUsesLeaseAndPublishedProjection(t *testing.T) {
+	config := runtimeSymemoFixtureConfig(t)
+	opens := 0
+	hostRuntime := newSymemoRuntime(func(ctx context.Context) (*symemo.Engine, error) {
+		opens++
+		return symemo.NewEngine(ctx, config)
+	})
+	if err := hostRuntime.initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hostRuntime.Close() })
+
+	created, err := hostRuntime.createElement(t.Context(), symemo.CreateElementCommand{
+		Kind:        symemo.CreateElementAddNewTopic,
+		AddNewTopic: symemo.AddNewTopicCommand{Title: "Runtime Topic", HTML: "<p>Runtime body</p>"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := hostRuntime.query(t.Context(), symemo.Query{Kind: symemo.QueryElement, ElementID: created.ElementID})
+	if err != nil || query.Element == nil || query.Element.Payload.Material == nil {
+		t.Fatalf("Runtime create query = %#v, err=%v", query.Element, err)
+	}
+
+	renamed, err := hostRuntime.changeElement(t.Context(), symemo.ChangeElementCommand{
+		Kind: symemo.ChangeElementRenameElement,
+		RenameElement: symemo.RenameElementCommand{
+			ElementID:             created.ElementID,
+			ExpectedTitleRevision: query.Element.TitleRevision,
+			Title:                 " Renamed Runtime Topic ",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Kind != symemo.ChangeElementRenameElement || renamed.ChangedField != symemo.ChangedElementTitle || renamed.CanonicalValue != "Renamed Runtime Topic" || !renamed.Changed || !renamed.ChangeAccepted {
+		t.Fatalf("Runtime rename result = %#v", renamed)
+	}
+
+	afterRename, err := hostRuntime.query(t.Context(), symemo.Query{Kind: symemo.QueryElement, ElementID: created.ElementID})
+	if err != nil || afterRename.Element == nil || afterRename.Element.Title != "Renamed Runtime Topic" || afterRename.Element.TitleRevision != renamed.Revision {
+		t.Fatalf("Runtime renamed Element = %#v, err=%v", afterRename.Element, err)
+	}
+	hostRuntime.mu.Lock()
+	active := hostRuntime.active
+	state := hostRuntime.state
+	hostRuntime.mu.Unlock()
+	if active != 0 || state != symemoRuntimeAvailable || opens != 1 {
+		t.Fatalf("Runtime change lease state active=%d state=%d opens=%d", active, state, opens)
+	}
+}
+
+func TestChangeSymemoElementUsesWorkspaceRuntimeFacade(t *testing.T) {
+	config := runtimeSymemoFixtureConfig(t)
+	hostRuntime := newSymemoRuntime(func(ctx context.Context) (*symemo.Engine, error) {
+		return symemo.NewEngine(ctx, config)
+	})
+	if err := hostRuntime.initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	original := workspaceSymemoRuntime
+	workspaceSymemoRuntime = hostRuntime
+	t.Cleanup(func() {
+		workspaceSymemoRuntime = original
+		_ = hostRuntime.Close()
+	})
+
+	created, err := CreateSymemoElement(t.Context(), symemo.CreateElementCommand{
+		Kind:        symemo.CreateElementAddNewTopic,
+		AddNewTopic: symemo.AddNewTopicCommand{Title: "Facade Topic", HTML: "<p>Before</p>"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := QuerySymemo(t.Context(), symemo.Query{Kind: symemo.QueryElement, ElementID: created.ElementID})
+	if err != nil || query.Element == nil || query.Element.Payload.Material == nil {
+		t.Fatalf("facade query = %#v, err=%v", query.Element, err)
+	}
+	changed, err := ChangeSymemoElement(t.Context(), symemo.ChangeElementCommand{
+		Kind: symemo.ChangeElementSaveTopicHTML,
+		SaveTopicHTML: symemo.SaveTopicHTMLCommand{
+			ElementID:                created.ElementID,
+			ExpectedMaterialRevision: query.Element.Payload.Material.Revision,
+			HTML:                     "<p>After</p>",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Kind != symemo.ChangeElementSaveTopicHTML || changed.ChangedField != symemo.ChangedElementMaterial || !strings.Contains(changed.CanonicalValue, ">After<") || !changed.ChangeAccepted {
+		t.Fatalf("facade change result = %#v", changed)
+	}
+}
+
+func TestSymemoRuntimeAcceptedChangeLatchesUntilCompleteReplacement(t *testing.T) {
+	config := runtimeSymemoFixtureConfig(t)
+	var opens atomic.Int32
+	hostRuntime := newSymemoRuntime(func(ctx context.Context) (*symemo.Engine, error) {
+		opens.Add(1)
+		return symemo.NewEngine(ctx, config)
+	})
+	if err := hostRuntime.initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hostRuntime.Close() })
+
+	created, err := hostRuntime.createElement(t.Context(), symemo.CreateElementCommand{
+		Kind:        symemo.CreateElementAddNewTopic,
+		AddNewTopic: symemo.AddNewTopicCommand{Title: "Accepted Change Topic", HTML: "<p>Before</p>"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := hostRuntime.query(t.Context(), symemo.Query{Kind: symemo.QueryElement, ElementID: created.ElementID})
+	if err != nil || query.Element == nil || query.Element.Payload.Material == nil {
+		t.Fatalf("created Topic = %#v, err=%v", query.Element, err)
+	}
+
+	restoreProjection := installRuntimeProjectionRefreshFailure(t, config)
+	result, err := hostRuntime.changeElement(t.Context(), symemo.ChangeElementCommand{
+		Kind: symemo.ChangeElementSaveTopicHTML,
+		SaveTopicHTML: symemo.SaveTopicHTMLCommand{
+			ElementID:                created.ElementID,
+			ExpectedMaterialRevision: query.Element.Payload.Material.Revision,
+			HTML:                     "<p>Accepted after projection failure</p>",
+		},
+	})
+	domainErr, ok := symemo.AsDomainError(err)
+	if !ok || domainErr.Code != symemo.ErrProjectionRefreshFailed || !domainErr.ChangeAccepted || domainErr.AcceptedChange == nil || domainErr.AcceptedChange.CanonicalValue != result.CanonicalValue || !result.ChangeAccepted {
+		t.Fatalf("accepted change outcome = %#v, err=%#v", result, domainErr)
+	}
+	if opens.Load() != 1 {
+		t.Fatalf("accepted change opened %d Engines before explicit rebuild", opens.Load())
+	}
+	if _, err = hostRuntime.query(t.Context(), symemo.Query{Kind: symemo.QueryElement, ElementID: created.ElementID}); err == nil {
+		t.Fatal("accepted change projection failure exposed stale Runtime")
+	} else {
+		assertSymemoRuntimeCode(t, err, symemo.ErrProjectionRebuildFailed)
+	}
+
+	restoreProjection()
+	if err = hostRuntime.rebuild(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if opens.Load() != 2 {
+		t.Fatalf("replacement opened %d Engines", opens.Load())
+	}
+	recovered, err := hostRuntime.query(t.Context(), symemo.Query{Kind: symemo.QueryElement, ElementID: created.ElementID})
+	if err != nil || recovered.Element == nil || recovered.Element.Payload.Material == nil || recovered.Element.Payload.Material.HTML != result.CanonicalValue || recovered.Element.Payload.Material.Revision != result.Revision {
+		t.Fatalf("recovered changed Topic = %#v, err=%v", recovered.Element, err)
+	}
+}
+
+func TestSymemoRuntimePartialWriteLeaseLatchesBeforeReplacement(t *testing.T) {
+	root := t.TempDir()
+	config := symemo.Config{StorageRoot: filepath.Join(root, "storage"), IndexRoot: filepath.Join(root, "temp", "siyuanmemo")}
+	hostRuntime := newSymemoRuntime(func(ctx context.Context) (*symemo.Engine, error) {
+		return symemo.NewEngine(ctx, config)
+	})
+	if err := hostRuntime.initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hostRuntime.Close() })
+
+	partial := &symemo.DomainError{Code: symemo.ErrElementWritePartial, Message: "injected partial write"}
+	if err := hostRuntime.withEngine(func(*symemo.Engine) error { return partial }); !errors.Is(err, partial) {
+		t.Fatalf("partial lease error = %v", err)
+	}
+	if _, err := hostRuntime.query(t.Context(), symemo.Query{Kind: symemo.QueryCurrentSession}); err == nil {
+		t.Fatal("partial write left Runtime available before replacement")
+	} else {
+		assertSymemoRuntimeCode(t, err, symemo.ErrProjectionRebuildFailed)
+	}
+	hostRuntime.mu.Lock()
+	state, active, storedFailure := hostRuntime.state, hostRuntime.active, hostRuntime.failure
+	hostRuntime.mu.Unlock()
+	if state != symemoRuntimeUnavailable || active != 0 || !errors.Is(storedFailure, partial) {
+		t.Fatalf("Runtime after partial lease state=%d active=%d failure=%v", state, active, storedFailure)
+	}
+}
+
 func TestSymemoRuntimePartialCreateReleasesLeaseDrainsAndPublishesReplacement(t *testing.T) {
 	config := runtimeSymemoFixtureConfig(t)
 	var opens atomic.Int32
@@ -823,6 +1004,49 @@ func TestSymemoRuntimePartialCreateReleasesLeaseDrainsAndPublishesReplacement(t 
 		if event.EventID == outcome.result.EventID {
 			t.Fatalf("partial create accepted event %#v", event)
 		}
+	}
+}
+
+func TestSymemoRuntimePartialCreateRebuildFailureLeavesRuntimeUnavailable(t *testing.T) {
+	config := runtimeSymemoFixtureConfig(t)
+	replacementFailure := errors.New("injected replacement failure")
+	var opens atomic.Int32
+	hostRuntime := newSymemoRuntime(func(ctx context.Context) (*symemo.Engine, error) {
+		if opens.Add(1) == 2 {
+			return nil, replacementFailure
+		}
+		return symemo.NewEngine(ctx, config)
+	})
+	if err := hostRuntime.initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hostRuntime.Close() })
+
+	sortDirectory := filepath.Join(config.StorageRoot, "elements", ".siyuan")
+	if err := os.WriteFile(sortDirectory, []byte("blocks sort directory creation"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := hostRuntime.createElement(t.Context(), symemo.CreateElementCommand{
+		Kind:        symemo.CreateElementAddNewTopic,
+		AddNewTopic: symemo.AddNewTopicCommand{Title: "Partial Rebuild Failure", HTML: "<p>Body</p>"},
+	})
+	domainErr, ok := symemo.AsDomainError(err)
+	if !ok || domainErr.Code != symemo.ErrElementWritePartial || result.ElementID == "" || result.EventID == "" {
+		t.Fatalf("partial create outcome = %#v, err=%#v", result, domainErr)
+	}
+	if opens.Load() != 2 {
+		t.Fatalf("partial create replacement opens = %d", opens.Load())
+	}
+	if _, err = hostRuntime.query(t.Context(), symemo.Query{Kind: symemo.QueryCurrentSession}); err == nil {
+		t.Fatal("failed partial rebuild left Runtime available")
+	} else {
+		assertSymemoRuntimeCode(t, err, symemo.ErrProjectionRebuildFailed)
+	}
+	hostRuntime.mu.Lock()
+	state, active, storedFailure := hostRuntime.state, hostRuntime.active, hostRuntime.failure
+	hostRuntime.mu.Unlock()
+	if state != symemoRuntimeUnavailable || active != 0 || !errors.Is(storedFailure, replacementFailure) {
+		t.Fatalf("Runtime after failed partial rebuild state=%d active=%d failure=%v", state, active, storedFailure)
 	}
 }
 

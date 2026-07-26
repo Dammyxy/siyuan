@@ -9,6 +9,7 @@ import {hideMessage, showMessage} from "../../dialog/message";
 import {isSiYuanUriProtocol} from "../../util/pathName";
 import {isBrowser} from "../../util/functions";
 import type {App} from "../../index";
+import {readDesktopClipboardPayload} from "./desktopClipboard";
 
 export const isPhablet = () => {
     return /Android|webOS|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Tablet/i.test(navigator.userAgent) || isIPhone() || isIPad();
@@ -195,11 +196,31 @@ export const getLocalFiles = async () => {
 };
 /// #endif
 
+/// #if !BROWSER
+const readDesktopClipboardText = async (text: IClipboardData): Promise<boolean> => {
+    const payload = await readDesktopClipboardPayload(
+        (channel, request) => ipcRenderer.invoke(channel, request),
+        Constants.SIYUAN_GET,
+    );
+    if (!payload) return false;
+    text.hasHTML = payload.hasHTML;
+    text.textHTML = payload.textHTML;
+    text.textPlain = payload.textPlain;
+    if (text.hasHTML) {
+        const textObj = getTextSiyuanFromTextHTML(text.textHTML);
+        text.textHTML = textObj.textHtml;
+        text.siyuanHTML = textObj.textSiyuan;
+    }
+    return true;
+};
+/// #endif
+
 export const readClipboard = async () => {
-    const text: IClipboardData = {textPlain: "", textHTML: "", siyuanHTML: ""};
+    const text: IClipboardData = {textPlain: "", textHTML: "", siyuanHTML: "", hasHTML: false};
     if (isInAndroid()) {
         text.textPlain = window.JSAndroid.readClipboard();
         text.textHTML = window.JSAndroid.readHTMLClipboard();
+        text.hasHTML = text.textHTML.length > 0;
         const textObj = getTextSiyuanFromTextHTML(text.textHTML);
         text.textHTML = textObj.textHtml;
         text.siyuanHTML = textObj.textSiyuan;
@@ -211,6 +232,7 @@ export const readClipboard = async () => {
     if (isInHarmony()) {
         text.textPlain = window.JSHarmony.readClipboard();
         text.textHTML = window.JSHarmony.readHTMLClipboard();
+        text.hasHTML = text.textHTML.length > 0;
         const textObj = getTextSiyuanFromTextHTML(text.textHTML);
         text.textHTML = textObj.textHtml;
         text.siyuanHTML = textObj.textSiyuan;
@@ -220,18 +242,38 @@ export const readClipboard = async () => {
         return text;
     }
     if (typeof navigator.clipboard === "undefined") {
+        /// #if !BROWSER
+        if (await readDesktopClipboardText(text)) {
+            if (!text.hasHTML) {
+                text.localFiles = await getLocalFiles();
+            }
+            return text;
+        }
+        /// #endif
         alert(window.siyuan.languages.clipboardPermissionDenied);
         return text;
     }
     try {
-        const clipboardContents = await navigator.clipboard.read().catch(() => {
+        let clipboardContents: ClipboardItems | undefined;
+        try {
+            clipboardContents = await navigator.clipboard.read();
+        } catch {
+            /// #if !BROWSER
+            if (await readDesktopClipboardText(text)) {
+                if (!text.hasHTML) {
+                    text.localFiles = await getLocalFiles();
+                }
+                return text;
+            }
+            /// #endif
             alert(window.siyuan.languages.clipboardPermissionDenied);
-        });
+        }
         if (!clipboardContents) {
             return text;
         }
         for (const item of clipboardContents) {
             if (item.types.includes("text/html")) {
+                text.hasHTML = true;
                 const blob = await item.getType("text/html");
                 text.textHTML = await blob.text();
                 const textObj = getTextSiyuanFromTextHTML(text.textHTML);
@@ -248,7 +290,7 @@ export const readClipboard = async () => {
             }
         }
         /// #if !BROWSER
-        if (!text.textHTML && !text.files) {
+        if (!text.hasHTML && !text.files) {
             text.localFiles = await getLocalFiles();
         }
         /// #endif

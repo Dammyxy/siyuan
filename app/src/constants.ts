@@ -43,6 +43,10 @@ export abstract class Constants {
     public static readonly SIYUAN_READY_TO_SHOW: string = "siyuan-ready-to-show";
     public static readonly SIYUAN_SEND_WINDOWS: string = "siyuan-send-windows"; // 主窗口和各新窗口之间的通信，{cmd: "closetab"|"lockscreen"|"lockscreenByMode", data: {}})
     public static readonly SIYUAN_SAVE_CLOSE: string = "siyuan-save-close";
+    public static readonly SIYUAN_SYMEMO_AUTHORING_TRANSITION: string = "siyuan-symemo-authoring-transition";
+    public static readonly SIYUAN_SYMEMO_AUTHORING_TRANSITION_EVENT: string = "siyuan-symemo-authoring-transition-event";
+    public static readonly SIYUAN_SYMEMO_TAB_TRANSFER: string = "siyuan-symemo-tab-transfer";
+    public static readonly SIYUAN_SYMEMO_TAB_TRANSFER_EVENT: string = "siyuan-symemo-tab-transfer-event";
     public static readonly SIYUAN_AUTO_LAUNCH: string = "siyuan-auto-launch";
 
     public static readonly SIYUAN_OPEN_WORKSPACE: string = "siyuan-open-workspace";

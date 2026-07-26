@@ -33,6 +33,7 @@ type Element struct {
 	ID              string         `json:"id"`
 	Type            string         `json:"type"`
 	Title           string         `json:"title,omitempty"`
+	TitleRevision   string         `json:"titleRevision,omitempty"`
 	ProcessingState string         `json:"processingState"`
 	PayloadSpec     int            `json:"payloadSpec"`
 	Payload         ElementPayload `json:"payload"`
@@ -46,10 +47,14 @@ func (element Element) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(struct {
+	data, err := json.Marshal(struct {
 		elementAlias
 		Payload json.RawMessage `json:"payload"`
 	}{elementAlias: elementAlias(element), Payload: payload})
+	if err != nil {
+		return nil, err
+	}
+	return marshalExplicitHTMLTopicTitle(data, element.Type, element.Payload, element.Title)
 }
 
 func isSupportedElementType(elementType string) bool {
@@ -101,6 +106,7 @@ type TopicMaterial struct {
 	Kind                  string          `json:"kind"`
 	HTML                  string          `json:"html,omitempty"`
 	CleaningPolicyVersion string          `json:"cleaningPolicyVersion,omitempty"`
+	Revision              string          `json:"revision,omitempty"`
 	BlockID               string          `json:"blockId,omitempty"`
 	SourceNotebookID      string          `json:"sourceNotebookId,omitempty"`
 	Raw                   json.RawMessage `json:"-"`
@@ -122,7 +128,11 @@ func (material TopicMaterial) MarshalJSON() ([]byte, error) {
 		return material.Raw, nil
 	}
 	type materialAlias TopicMaterial
-	return json.Marshal(materialAlias(material))
+	data, err := json.Marshal(materialAlias(material))
+	if err != nil {
+		return nil, err
+	}
+	return marshalExplicitTopicMaterialHTML(data, material)
 }
 
 func isSupportedTopicMaterialKind(kind string) bool {
@@ -212,10 +222,54 @@ func (view ElementReadView) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(struct {
+	data, err := json.Marshal(struct {
 		viewAlias
 		Payload json.RawMessage `json:"payload"`
 	}{viewAlias: viewAlias(view), Payload: payload})
+	if err != nil {
+		return nil, err
+	}
+	return marshalExplicitHTMLTopicTitle(data, view.Type, view.Payload, view.Title)
+}
+
+func marshalExplicitHTMLTopicTitle(data []byte, elementType string, payload ElementPayload, title string) ([]byte, error) {
+	if !isSupportedV1HTMLTopic(elementType, payload) {
+		return data, nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return nil, err
+	}
+	titleData, err := json.Marshal(title)
+	if err != nil {
+		return nil, err
+	}
+	object["title"] = titleData
+	return json.Marshal(object)
+}
+
+func marshalExplicitTopicMaterialHTML(data []byte, material TopicMaterial) ([]byte, error) {
+	if !isSupportedV1TopicHTMLMaterial(&material) {
+		return data, nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return nil, err
+	}
+	htmlData, err := json.Marshal(material.HTML)
+	if err != nil {
+		return nil, err
+	}
+	object["html"] = htmlData
+	return json.Marshal(object)
+}
+
+func isSupportedV1HTMLTopic(elementType string, payload ElementPayload) bool {
+	return elementType == "topic" && isSupportedV1TopicHTMLMaterial(payload.Material)
+}
+
+func isSupportedV1TopicHTMLMaterial(material *TopicMaterial) bool {
+	return material != nil && material.Kind == "html" && material.CleaningPolicyVersion == topicHTMLCleaningPolicyVersion
 }
 
 type ElementScheduleSummary struct {
@@ -538,8 +592,44 @@ type CreateElementCommand struct {
 	AddNewTopic AddNewTopicCommand `json:"addNewTopic,omitempty"`
 }
 
-type ChangeElementCommand struct{ Kind string }
 type SendToNoteCommand struct{ Kind string }
+
+type ChangeElementKind string
+
+const (
+	ChangeElementRenameElement ChangeElementKind = "RenameElement"
+	ChangeElementSaveTopicHTML ChangeElementKind = "SaveTopicHTML"
+)
+
+type RenameElementCommand struct {
+	ElementID             string `json:"elementId"`
+	ExpectedTitleRevision string `json:"expectedTitleRevision"`
+	Title                 string `json:"title"`
+}
+
+type SaveTopicHTMLCommand struct {
+	ElementID                string `json:"elementId"`
+	ExpectedMaterialRevision string `json:"expectedMaterialRevision"`
+	HTML                     string `json:"html"`
+}
+
+type ChangeElementCommand struct {
+	Kind          ChangeElementKind    `json:"kind"`
+	RenameElement RenameElementCommand `json:"renameElement,omitempty"`
+	SaveTopicHTML SaveTopicHTMLCommand `json:"saveTopicHTML,omitempty"`
+}
+
+type ChangedElementField string
+
+const (
+	ChangedElementTitle    ChangedElementField = "title"
+	ChangedElementMaterial ChangedElementField = "material"
+)
+
+type MaterialNodeIdentityAssignment struct {
+	ClientNodeKey string `json:"clientNodeKey"`
+	NodeID        string `json:"nodeId"`
+}
 
 type CreatedTopicSummary struct {
 	ElementID             string     `json:"elementId"`
@@ -567,5 +657,15 @@ type CreateElementResult struct {
 	Topic          *CreatedTopicSummary `json:"topic,omitempty"`
 }
 
-type ChangeElementResult struct{}
+type ChangeElementResult struct {
+	Kind                    ChangeElementKind                `json:"kind"`
+	ElementID               string                           `json:"elementId"`
+	ChangedField            ChangedElementField              `json:"changedField"`
+	CanonicalValue          string                           `json:"canonicalValue"`
+	Revision                string                           `json:"revision"`
+	CleaningPolicyVersion   string                           `json:"cleaningPolicyVersion,omitempty"`
+	NodeIdentityAssignments []MaterialNodeIdentityAssignment `json:"nodeIdentityAssignments,omitempty"`
+	Changed                 bool                             `json:"changed"`
+	ChangeAccepted          bool                             `json:"changeAccepted"`
+}
 type SendToNoteResult struct{}

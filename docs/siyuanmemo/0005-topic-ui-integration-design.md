@@ -1,6 +1,7 @@
 # Topic Navigation And Element Browser Design
 
 Date: 2026-07-19
+Updated: 2026-07-24
 
 ## Decision
 
@@ -16,6 +17,41 @@ The MVP UI has these native surfaces plus an embedded learning mode:
 - Dock controls: left Elements, right Inspector, right Backlinks, and bottom Element Context can be hidden or shown from stable dock buttons.
 
 Topics are still not SiYuan blocks. These UI surfaces are Adapters over the Learning Engine. They must not directly mutate Element files, scheduler state, indexes, or SiYuan note blocks.
+
+## Feature 005 Confirmed Boundary
+
+Feature 005 is the first production frontend tracer, not the complete UI described in the rest of this document. It is intentionally read-only:
+
+- add one native desktop `ElementsDock` and one native center `ElementTab`;
+- query the existing `getElementTree` and `getElement` routes through a typed frontend transport Adapter;
+- render only supported HTML Topics whose `cleaningPolicyVersion` is exactly `siyuanmemo-topic-html-v1`;
+- keep every Element visible and openable, but show a read-only renderer-unavailable state for Items, Concepts, Block-backed Topics, supported Elements without an HTML renderer, future Element types, and HTML with a missing or unknown cleaning policy;
+- handle initial loading, refresh loading, empty tree, tree failure, missing Element, detail failure, and `unsupportedReadOnly` without closing the dock or tab;
+- provide dock refresh and collapse controls, native dock minimization, selection, expansion, open actions, layout persistence, and restoration;
+- ship no prototype-only state switcher, status legend, global search field, queue chip, schedule chip, creation button, editing toolbar, or learning controls.
+
+Feature 005 tree interaction follows SiYuan's current document-tree behavior and configuration rather than adding SiYuanMemo preferences:
+
+- the disclosure arrow always expands or collapses children;
+- `fileTree.parentDocClickExpand` controls whether a parent title expands/collapses or opens the Element;
+- `fileTree.docIconClickExpand` controls whether the fixed Element type icon expands a parent or opens a leaf; when disabled, the fixed icon opens the Element because Element type icons are semantic and have no emoji editor;
+- Element opening follows `openFilesUseCurrentTab`, `maxOpenTabCount`, `noSplitScreenWhenOpenTab`, `closeTabsOnStart`, `alwaysSelectOpenedFile`, the existing modifier conventions, and normal right/bottom split behavior where each setting applies;
+- Element order continues to come from the Learning Engine tree projection. SiYuan FileTree sort and document-creation settings do not become Element authority.
+
+The Feature 005 row context menu contains only working native open variants: open Element, open in the current tab, open in a new tab, open to the right, and open below. It contains no disabled future commands.
+
+For recognized v1 HTML, `ElementTab` uses SiYuan's existing HTML/image and math-rendering paths. Link activation delegates to SiYuan's `openLink`; the UI adds no downloader, proxy, fetch service, or alternate external-link policy. Unknown or legacy HTML is never injected into the DOM merely because it is present in an Element payload.
+
+## Immediate Follow-up: Feature 006
+
+Feature 006 adds the first Topic authoring surface after the read-only navigation tracer is stable:
+
+- restore the `+`/new Topic entry point in `ElementsDock`;
+- add the real Topic editor instead of a temporary paste area;
+- provide editor-component context commands for normal paste, paste as plain text, and paste as HTML;
+- reuse Feature 004 `createHTMLTopic` for creation and add the separately specified `SaveTopicHTML`/`ChangeElement` path for existing Topic edits.
+
+Rename, move, child Concept creation, promotion/demotion, and drag/drop remain in a later structural-editing feature because they require Element-owned multi-source writes, sort updates, history snapshots, and sync recovery. Learn/Next, Item answer and grade controls, Remember, Forget, Dismiss, Postpone, and Reschedule remain in a later learning/lifecycle UI feature. Commands appear only when their Engine action and complete user workflow exist.
 
 ## Repository Investigation
 
@@ -67,12 +103,14 @@ Icon model:
 
 `ElementsDock` is a native dock `Model` with a compact header and a tree body.
 
-The header should include:
+The complete product header may eventually include:
 
 - title: `Elements`;
 - import button: imports clipboard/local HTML as a Topic;
 - collapse button: collapses the tree;
 - more menu: sort, show dismissed Elements, rebuild index, and settings.
+
+Feature 005 uses only the read-only subset fixed above: title, refresh, collapse, and native dock minimization. Import/new, search, and mutation menus begin with the feature that owns those workflows.
 
 The dock is one unified navigation projection over the dual-tree storage model:
 
@@ -86,12 +124,14 @@ The dock is one unified navigation projection over the dual-tree storage model:
 - Dismissed Topics remain in their original tree location. The tree shows a yellow dismissed icon state instead of moving them to an automatic category.
 - Count badges may show due descendants or child counts, but they must be computed by the Learning Engine/index.
 
-Tree actions:
+Complete-product tree actions:
 
 - click opens a Topic in `ElementTab`;
 - modifier-click should follow SiYuan's existing split conventions where practical;
 - context menu supports open, rename, move, set priority, dismiss/remember, create internal child Concept, import internal child Topic, and promote an internal Element to a root document;
 - drag/drop move can be added after the MVP, but the Engine must own `MoveElement` and the command must identify internal-tree versus root-document-tree placement.
+
+Feature 005 implements only selection, expand/collapse, the native open variants, and refresh. The later commands above must not appear as disabled placeholders.
 
 `ElementsDock` should call `GetElementTree(query)` and `OpenElement(command)`. The unified tree DTO must include `storageKind` and `ownerRootId`; the dock must not assemble or merge storage trees by reading files directly.
 
@@ -194,11 +234,11 @@ Element tools such as extract, cloze/item creation, split, send to note, read po
 
 The tools area switches among compact Learn, Edit, Read, Tools, and Alarm groups. Actions stay on one row when space permits and wrap to a second row only at narrower widths. The toolbar must not reserve a permanent two-row height on wide screens or push the reader out of the content area.
 
-Topic HTML also has a right-click `TopicReaderContextMenu`, based on the SuperMemo `Component menu` pattern. This menu is scoped to the current reader/editor surface and must not be confused with `ElementBrowser`'s browser menu. It may mirror toolbar actions such as extract, cloze, split, read point, highlight, ignore, send to note, find in article, insert Element link, download images, and mode switching. Selection-dependent actions are disabled or hidden when no valid text range is selected.
+Topic HTML also has a right-click `TopicReaderContextMenu`, based on the SuperMemo `Component menu` pattern. This menu is scoped to the current always-editable HTML surface and must not be confused with `ElementBrowser`'s browser menu. It may mirror toolbar actions such as extract, cloze, split, read point, highlight, ignore, send to note, find in article, insert Element link, and download images. Selection-dependent actions are disabled or hidden when no valid text range is selected.
 
 Native SiYuan block context actions may expose `Create Topic from block`, `Create Item from block`, and `Create Cloze Item from block`. A whole block with no explicit back-side answer creates a Block-backed Topic whose `.sme` payload stores the stable block ID and whose live material remains in `.sy`. Explicit prompt/answer or cloze intent creates an Item snapshot through `BlockSnapshotReader`. None of these commands replaces the native note block. MVP does not treat an arbitrary selected range as a live Block-backed Topic; that would require a later versioned range-reference contract.
 
-`Add new` creates only a new Topic with one primary `boundTo` target. The target may be the current Element's Concept or the current Element itself when the workflow is intentionally anchored there. It does not imply a structural child Topic, does not open an Element type picker, and does not create Items, Concepts, or notes. Rebinding replaces the primary target. Additional associations use explicit Element links and therefore appear as normal backlinks. Manual Q/A and cloze creation remain separate explicit commands.
+`Add new` creates only a new Topic. Feature 006's Elements-dock `+` command immediately creates a real unbound top-level Topic with an empty stored title and empty HTML body, then opens its editable Surface; the localized `Untitled` label is presentation only. It does not stage a frontend-only draft, imply a structural child Topic, open an Element type picker, or create Items, Concepts, or notes. A later contextual Product v1 command may supply one primary `boundTo` target; rebinding replaces that target, while additional associations use explicit Element links and normal backlinks. Manual Q/A and cloze creation remain separate explicit commands.
 
 ## Element Inspector
 
@@ -301,8 +341,8 @@ Backlinks are rendered in `ElementBacklinksDock`, not inside `ElementInspector`.
 Opening rules:
 
 - opening an already-open Element focuses the existing `ElementTab`;
-- opening an Element from a note reference follows SiYuan-style tab reuse: reuse a current reusable/unmodified tab when possible; create a new tab when no reusable tab exists;
-- standard split options should open the Element to the right or bottom;
+- opening an Element follows SiYuan's current-tab/new-tab policy, reusable-tab rules, maximum-tab handling, split preference, modifier conventions, and startup restoration settings rather than a fixed single-Element tab policy;
+- standard split options open the Element to the right or bottom through the native helpers;
 - tab title follows the Element title;
 - layout restore must be able to reopen Element tabs by `elementId`;
 - if an Element is missing, deleted, or unavailable, the tab should show a recoverable error surface instead of silently closing.
@@ -360,7 +400,9 @@ app/src/symemo/
 
 The public UI seams are `openElement`, `openElementBrowser`, and `ElementsDock`. TinyMCE, table rendering, tree rendering, selection handling, context menus, toolbar actions, and keyboard details stay inside the UI implementation.
 
-## MVP Build Order
+## Complete Product UI Capability Inventory
+
+The numbered groups below describe complete Product v1 UI coverage, not chronological Feature order. `0013-delivery-roadmap.md` is authoritative for delivery sequence and milestone gates. Feature 005 implements the read-only subset of groups 2, 3, and 8 plus their minimum existing-query transport. Feature 006 implements the first Topic authoring subset of groups 4 and 9. A group's position here does not authorize its commands in either Feature.
 
 1. Add backend DTOs and actions for `GetElementTree` and `GetElementSubset`.
 2. Add `ElementsDock` as a native left dock type and default layout entry.
@@ -372,8 +414,8 @@ The public UI seams are `openElement`, `openElementBrowser`, and `ElementsDock`.
 8. Add dock hide/show behavior plus layout serialization/restore for `SymemoElement` and `SymemoElementBrowser`.
 9. Add TinyMCE editing and richer Topic Reader actions after the navigation loop works.
 
-The tracer-bullet MVP is acceptable when a user can import or seed a Topic, create a Topic from a block with no back-side answer, create an Item from an explicit block Q/A or cloze, see it in the Elements tree, open it as an Element tab, maintain a read point, extract child Topics, create at least basic Items, start review from the Element toolbar `Learn` button, continue or discard a locally recoverable interrupted scoped queue, process Topics with active-session-only `Next`, process Items with `Show Answer` and grades `0..5`, send any Element to notes, see Elements in the browser, postpone/dismiss/remember/forget them, hide/show left/right/bottom docks, and return to Elements from both surfaces.
+The complete Product v1 UI target is acceptable when a user can import or seed a Topic, create a Topic from a block with no back-side answer, create an Item from an explicit block Q/A or cloze, see it in the Elements tree, open it as an Element tab, maintain a read point, extract child Topics, create at least basic Items, start review from the Element toolbar `Learn` button, continue or discard a locally recoverable interrupted scoped queue, process Topics with active-session-only `Next`, process Items with `Show Answer` and grades `0..5`, send any Element to notes, see Elements in the browser, postpone/dismiss/remember/forget them, hide/show left/right/bottom docks, and return to Elements from both surfaces.
 
-## Non-Goals For MVP
+## Non-Goals For Product V1
 
 The first UI pass does not need drag/drop tree reparenting, custom queue formulas, advanced table grouping, full keyboard parity, mobile layout, plugin packaging, or replacing SiYuan's file tree. It only needs the correct native seams so the progressive reading loop is usable without coupling Topics to SiYuan document blocks.

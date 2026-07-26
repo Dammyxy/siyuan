@@ -45,7 +45,11 @@ class TestLayout {
 }
 
 class TestElementTab {
-    constructor(public readonly elementId: string) {}
+    public readonly elementId: string;
+
+    constructor(value: string | {elementId: string}) {
+        this.elementId = typeof value === "string" ? value : value.elementId;
+    }
 }
 
 class TestTab {
@@ -77,10 +81,12 @@ class TestWnd {
     public readonly switched: TestHeadElement[] = [];
     public headingCount = 0;
     public splitResult?: TestWnd;
+    private mutationTail: Promise<void> = Promise.resolve();
 
     public addTab(tab: TestTab) {
         this.added.push(tab);
         this.children.push(tab);
+        if (!allTabs.includes(tab)) allTabs.push(tab);
         tab.parent = this;
         tab.callback?.(tab);
     }
@@ -88,6 +94,24 @@ class TestWnd {
     public removeTab(id: string) {
         this.removed.push(id);
         this.children = this.children.filter((tab) => tab.id !== id);
+    }
+
+    public async replaceTab(tab: TestTab, options: {commit: () => boolean}) {
+        if (!transitionAllowed || !this.children.includes(tab) || !options.commit()) {
+            return false;
+        }
+        this.removeTab(tab.id);
+        return true;
+    }
+
+    public runTabMutation<T>(callback: () => Promise<T> | T): Promise<T> {
+        const result = this.mutationTail.then(callback, callback);
+        this.mutationTail = result.then(() => undefined, () => undefined);
+        return result;
+    }
+
+    public async trimOverflowTabs(): Promise<void> {
+        return undefined;
     }
 
     public showHeading() {
@@ -110,6 +134,7 @@ const stubPaths = [
     require.resolve("../layout/getAll"),
     require.resolve("../layout/util"),
     require.resolve("./ElementTab"),
+    require.resolve("./authoringRegistry"),
 ];
 const originalModules = stubPaths.map((modulePath) => require.cache[modulePath]);
 let openElementWithHost: typeof import("./openElement").openElementWithHost;
@@ -118,6 +143,8 @@ let activeWnd: TestWnd | undefined;
 let allTabs: TestTab[] = [];
 let pdfLoading = new Set<HTMLElement>();
 let pdfChecks: HTMLElement[] = [];
+let authoringBusy = false;
+let transitionAllowed = true;
 
 before(async () => {
     require.cache[stubPaths[0]] = {exports: {Layout: TestLayout}} as NodeModule;
@@ -135,6 +162,10 @@ before(async () => {
         },
     }} as NodeModule;
     require.cache[stubPaths[4]] = {exports: {ElementTab: TestElementTab}} as NodeModule;
+    require.cache[stubPaths[5]] = {exports: {
+        isWindowAuthoringBusy: () => authoringBusy,
+        prepareModelTransition: async () => transitionAllowed ? {allowed: true} : {allowed: false, reason: "save-failed"},
+    }} as NodeModule;
 
     (globalThis as unknown as {window: Window}).window = {
         siyuan: {
@@ -158,6 +189,8 @@ beforeEach(() => {
     pdfLoading = new Set();
     pdfChecks = [];
     TestTab.instances = [];
+    authoringBusy = false;
+    transitionAllowed = true;
     window.siyuan.config.fileTree.openFilesUseCurrentTab = false;
     window.siyuan.config.fileTree.maxOpenTabCount = 8;
 });
@@ -221,16 +254,16 @@ const addExistingTab = (wnd: TestWnd, model?: TestElementTab, initData?: object)
 };
 
 describe("ordinary Element opening", () => {
-    it("refuses a blank Element ID without touching host tabs", () => {
+    it("refuses a blank Element ID without touching host tabs", async () => {
         const fixture = createHost();
-        assert.equal(openElementWithHost(options({elementId: "  "}), fixture.host), undefined);
+        assert.equal(await openElementWithHost(options({elementId: "  "}), fixture.host), undefined);
         assert.equal(fixture.created.length, 0);
         assert.equal(fixture.focused.length, 0);
     });
 
-    it("creates one ordinary native identity with safe title and semantic icon metadata", () => {
+    it("creates one ordinary native identity with safe title and semantic icon metadata", async () => {
         const fixture = createHost();
-        const result = openElementWithHost(options({title: "<img onerror=alert(1)>", type: "topic"}), fixture.host);
+        const result = await openElementWithHost(options({title: "<img onerror=alert(1)>", type: "topic"}), fixture.host);
 
         assert.ok(result);
         assert.deepEqual(fixture.created, [{identity: {
@@ -238,21 +271,21 @@ describe("ordinary Element opening", () => {
         }, intent: "ordinary"}]);
     });
 
-    it("focuses a live same-ID match instead of creating a duplicate", () => {
+    it("focuses a live same-ID match instead of creating a duplicate", async () => {
         const fixture = createHost();
         const existing = {elementId: "topic-id"};
         fixture.matches.push(existing);
 
-        assert.equal(openElementWithHost(options(), fixture.host), existing);
+        assert.equal(await openElementWithHost(options(), fixture.host), existing);
         assert.deepEqual(fixture.focused, [existing]);
         assert.equal(fixture.created.length, 0);
     });
 
-    it("bypasses all matches for explicit new and delegates current/right/bottom intent", () => {
+    it("bypasses all matches for explicit new and delegates current/right/bottom intent", async () => {
         for (const intent of ["new", "current", "right", "bottom"] as const) {
             const fixture = createHost();
             fixture.matches.push({elementId: "topic-id"});
-            openElementWithHost(options({intent}), fixture.host);
+            await openElementWithHost(options({intent}), fixture.host);
             assert.equal(fixture.focused.length, 0);
             assert.equal(fixture.created[0].intent, intent);
         }
@@ -260,7 +293,7 @@ describe("ordinary Element opening", () => {
 });
 
 describe("native Element host", () => {
-    it("opens right and bottom in an empty Wnd without splitting", () => {
+    it("opens right and bottom in an empty Wnd without splitting", async () => {
         for (const intent of ["right", "bottom"] as const) {
             const wnd = attachWnd(new TestWnd());
             const placeholder = new TestTab({});
@@ -268,7 +301,7 @@ describe("native Element host", () => {
             placeholder.parent = wnd;
             wnd.children.push(placeholder);
 
-            const result = createNativeHost({} as App).createTab(identity, intent);
+            const result = await createNativeHost({} as App).createTab(identity, intent);
 
             assert.ok(result);
             assert.deepEqual(wnd.splitCalls, []);
@@ -280,7 +313,7 @@ describe("native Element host", () => {
         }
     });
 
-    it("blocks empty-Wnd right and bottom opens while its PDF is loading", () => {
+    it("blocks empty-Wnd right and bottom opens while its PDF is loading", async () => {
         for (const intent of ["right", "bottom"] as const) {
             const wnd = attachWnd(new TestWnd());
             const placeholder = new TestTab({});
@@ -290,7 +323,7 @@ describe("native Element host", () => {
             pdfLoading.add(wnd.element);
             const previousCount = TestTab.instances.length;
 
-            assert.equal(createNativeHost({} as App).createTab(identity, intent), undefined);
+            assert.equal(await createNativeHost({} as App).createTab(identity, intent), undefined);
             assert.equal(TestTab.instances.length, previousCount);
             assert.deepEqual(wnd.splitCalls, []);
             assert.equal(wnd.added.length, 0);
@@ -299,7 +332,7 @@ describe("native Element host", () => {
         }
     });
 
-    it("checks an adjacent target Wnd before reusing or creating a tab there", () => {
+    it("checks an adjacent target Wnd before reusing or creating a tab there", async () => {
         const current = new TestWnd();
         const target = new TestWnd();
         addExistingTab(current, new TestElementTab("other"));
@@ -310,7 +343,7 @@ describe("native Element host", () => {
         activeWnd = current;
         pdfLoading.add(target.element);
 
-        assert.equal(createNativeHost({} as App).createTab(identity, "right"), undefined);
+        assert.equal(await createNativeHost({} as App).createTab(identity, "right"), undefined);
         assert.deepEqual(pdfChecks, [target.element]);
         assert.equal(target.switched.length, 0);
         assert.equal(target.added.length, 0);
@@ -318,7 +351,7 @@ describe("native Element host", () => {
         assert.ok(existing);
     });
 
-    it("splits in the requested direction when there is no adjacent target", () => {
+    it("splits in the requested direction when there is no adjacent target", async () => {
         for (const [intent, direction] of [["right", "lr"], ["bottom", "tb"]] as const) {
             const current = attachWnd(new TestWnd());
             addExistingTab(current, new TestElementTab("other"));
@@ -326,7 +359,7 @@ describe("native Element host", () => {
             splitWnd.parent = current.parent;
             current.splitResult = splitWnd;
 
-            const result = createNativeHost({} as App).createTab(identity, intent);
+            const result = await createNativeHost({} as App).createTab(identity, intent);
 
             assert.ok(result);
             assert.deepEqual(current.splitCalls, [direction]);
@@ -339,14 +372,14 @@ describe("native Element host", () => {
         }
     });
 
-    it("returns an ordinary live match without switching away from a loading PDF", () => {
+    it("returns an ordinary live match without switching away from a loading PDF", async () => {
         const current = attachWnd(new TestWnd());
         const target = new TestWnd();
         target.parent = current.parent;
         const existing = addExistingTab(target, new TestElementTab("topic-id"));
         pdfLoading.add(target.element);
 
-        const result = openElementWithHost(options(), createNativeHost({} as App));
+        const result = await openElementWithHost(options(), createNativeHost({} as App));
 
         assert.equal(result?.tab, existing as unknown as import("../layout/Tab").Tab);
         assert.deepEqual(pdfChecks, [target.element]);
@@ -364,11 +397,11 @@ describe("native Element host", () => {
         assert.deepEqual(createNativeHost({} as App).findOrdinaryMatches("topic-id").map((item) => item.tab), [lazy, live]);
     });
 
-    it("focuses an ordinary lazy match without creating a duplicate tab", () => {
+    it("focuses an ordinary lazy match without creating a duplicate tab", async () => {
         const wnd = attachWnd(new TestWnd());
         const lazy = addExistingTab(wnd, undefined, {instance: "SymemoElement", elementId: "topic-id"});
 
-        const result = openElementWithHost(options(), createNativeHost({} as App));
+        const result = await openElementWithHost(options(), createNativeHost({} as App));
 
         assert.equal(result?.tab, lazy as unknown as import("../layout/Tab").Tab);
         assert.deepEqual(wnd.switched, [lazy.headElement]);
@@ -376,41 +409,99 @@ describe("native Element host", () => {
         assert.equal(TestTab.instances.length, 1);
     });
 
-    it("preserves a focused pinned tab and removes the eligible background transient fallback", () => {
+    it("preserves a focused pinned tab and removes the eligible background transient fallback", async () => {
         const wnd = attachWnd(new TestWnd());
         const pinned = addExistingTab(wnd, new TestElementTab("pinned"));
         pinned.headElement?.classList.add("item--unupdate", "item--pin", "item--focus");
         const reusable = addExistingTab(wnd, new TestElementTab("reusable"));
         reusable.headElement?.classList.add("item--unupdate");
 
-        createNativeHost({} as App).createTab(identity, "current");
+        await createNativeHost({} as App).createTab(identity, "current");
 
         assert.deepEqual(wnd.removed, [reusable.id]);
         assert.equal(wnd.children.includes(pinned), true);
     });
 
-    it("preserves a focused updated tab and removes the eligible background transient fallback", () => {
+    it("preserves a focused updated tab and removes the eligible background transient fallback", async () => {
         const wnd = attachWnd(new TestWnd());
         const updated = addExistingTab(wnd, new TestElementTab("updated"));
         updated.headElement?.classList.add("item--focus");
         const reusable = addExistingTab(wnd, new TestElementTab("reusable"));
         reusable.headElement?.classList.add("item--unupdate");
 
-        createNativeHost({} as App).createTab(identity, "current");
+        await createNativeHost({} as App).createTab(identity, "current");
 
         assert.deepEqual(wnd.removed, [reusable.id]);
         assert.equal(wnd.children.includes(updated), true);
     });
 
-    it("delegates each new tab to Wnd.addTab so the host retains tab-cap enforcement", () => {
+    it("delegates each new tab to Wnd.addTab so the host retains tab-cap enforcement", async () => {
         const wnd = attachWnd(new TestWnd());
         addExistingTab(wnd, new TestElementTab("other"));
         window.siyuan.config.fileTree.maxOpenTabCount = 1;
 
-        const result = createNativeHost({} as App).createTab(identity, "new");
+        const result = await createNativeHost({} as App).createTab(identity, "new");
 
         assert.ok(result);
         assert.equal(wnd.added.length, 1);
         assert.equal(wnd.added[0], result?.tab as unknown as TestTab);
+    });
+
+    it("serializes concurrent ordinary opens and creates only one same-ID tab", async () => {
+        const wnd = attachWnd(new TestWnd());
+        addExistingTab(wnd, new TestElementTab("other"));
+        const host = createNativeHost({} as App);
+
+        const [first, second] = await Promise.all([
+            host.createTab(identity, "ordinary"),
+            host.createTab(identity, "ordinary"),
+        ]);
+
+        assert.equal(wnd.added.length, 1);
+        assert.equal(first?.tab, wnd.added[0] as unknown as import("../layout/Tab").Tab);
+        assert.equal(second?.tab, wnd.added[0] as unknown as import("../layout/Tab").Tab);
+    });
+
+    it("does not connect a replacement tab when the reusable surface blocks", async () => {
+        const wnd = attachWnd(new TestWnd());
+        const reusable = addExistingTab(wnd, new TestElementTab("draft"));
+        reusable.headElement?.classList.add("item--unupdate");
+        transitionAllowed = false;
+
+        const result = await createNativeHost({} as App).createTab(identity, "current");
+
+        assert.equal(result, undefined);
+        assert.equal(wnd.added.length, 0);
+        assert.deepEqual(wnd.removed, []);
+        assert.equal(wnd.children.includes(reusable), true);
+    });
+
+    it("does not focus, split, or create while the renderer authoring barrier is active", async () => {
+        const wnd = attachWnd(new TestWnd());
+        const existing = addExistingTab(wnd, new TestElementTab("topic-id"));
+        authoringBusy = true;
+        const {openElement} = await import("./openElement");
+
+        assert.equal(await openElement(options()), undefined);
+        assert.equal(wnd.added.length, 0);
+        assert.equal(wnd.switched.length, 0);
+        assert.equal(wnd.splitCalls.length, 0);
+        assert.ok(existing);
+    });
+
+    it("prepares the exact reusable tab before a creating command may start", async () => {
+        const wnd = attachWnd(new TestWnd());
+        const reusable = addExistingTab(wnd, new TestElementTab("draft"));
+        reusable.headElement?.classList.add("item--unupdate");
+        window.siyuan.config.fileTree.openFilesUseCurrentTab = true;
+        const {prepareNativeElementOpen} = await import("./openElement");
+
+        assert.deepEqual(await prepareNativeElementOpen("ordinary"), {
+            allowed: true,
+            replacementTabId: reusable.id,
+        });
+
+        transitionAllowed = false;
+        assert.deepEqual(await prepareNativeElementOpen("ordinary"), {allowed: false});
     });
 });

@@ -49,7 +49,7 @@ func TestTopicHTMLCleanerPolicyMatrix(t *testing.T) {
 		{
 			name:     "urls and attributes are restricted",
 			input:    `<p><a href="javascript:bad()" title="drop">bad</a><a href="https://example.com/a?b=1" rel="nofollow">good</a><img src="data:image/png;base64,AAA" alt="bad"><img src="#figure" alt="ok"></p>`,
-			wantHTML: `<p data-symemo-node-id="ID"><a title="drop">bad</a><a href="https://example.com/a?b=1">good</a><img alt="bad"><img alt="ok" src="#figure"></p>`,
+			wantHTML: `<p data-symemo-node-id="ID"><a title="drop">bad</a><a href="https://example.com/a?b=1">good</a></p>`,
 		},
 		{
 			name:     "pre and code whitespace is preserved",
@@ -104,6 +104,18 @@ func TestTopicHTMLCleanerDropsTrustSensitiveMath(t *testing.T) {
 		if normalized != `<p data-symemo-node-id="ID">kept</p>` {
 			t.Fatalf("trust-sensitive math survived cleaning: %s", cleaned)
 		}
+	}
+}
+
+func TestTopicHTMLCleanerKeepsFormulaSourceOnly(t *testing.T) {
+	cleaned, err := cleanTopicHTMLFragment(`<div data-type="NodeMathBlock" data-subtype="math" data-content="x^2" class="language-math" data-render="1" contenteditable="false"><span class="katex">rendered</span></div><span data-type="inline-math" data-subtype="math" data-content="y^2"><span class="katex">rendered</span></span>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := feature004NodeIDPattern.ReplaceAllString(cleaned, `data-symemo-node-id="ID"`)
+	want := `<div data-content="x^2" data-subtype="math" data-symemo-katex-trust="false" data-symemo-node-id="ID" data-type="NodeMathBlock"></div><span data-content="y^2" data-subtype="math" data-symemo-katex-trust="false" data-type="inline-math"></span>`
+	if normalized != want {
+		t.Fatalf("formula source HTML\nactual: %s\nwant:   %s", normalized, want)
 	}
 }
 

@@ -26,6 +26,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -47,6 +49,8 @@ func TestSymemoRoutes(t *testing.T) {
 		"POST /api/symemo/getElement":                  false,
 		"POST /api/symemo/getElementSourceDiagnostics": false,
 		"POST /api/symemo/createHTMLTopic":             false,
+		"POST /api/symemo/renameElement":               false,
+		"POST /api/symemo/saveTopicHTML":               false,
 		"POST /api/symemo/startLearning":               false,
 		"POST /api/symemo/showAnswer":                  false,
 		"POST /api/symemo/gradeItem":                   false,
@@ -319,6 +323,8 @@ func TestSymemoHandlersRemainTransportOnly(t *testing.T) {
 		`ginServer.Handle("POST", "/api/symemo/getElement", model.CheckAuth, model.CheckAdminRole, getSymemoElement)`,
 		`ginServer.Handle("POST", "/api/symemo/getElementSourceDiagnostics", model.CheckAuth, model.CheckAdminRole, getSymemoElementSourceDiagnostics)`,
 		`ginServer.Handle("POST", "/api/symemo/createHTMLTopic", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, createHTMLTopic)`,
+		`ginServer.Handle("POST", "/api/symemo/renameElement", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, renameSymemoElement)`,
+		`ginServer.Handle("POST", "/api/symemo/saveTopicHTML", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, saveSymemoTopicHTML)`,
 		`ginServer.Handle("POST", "/api/symemo/startLearning", model.CheckAuth, model.CheckAdminRole, startSymemoLearning)`,
 		`ginServer.Handle("POST", "/api/symemo/showAnswer", model.CheckAuth, model.CheckAdminRole, showSymemoAnswer)`,
 		`ginServer.Handle("POST", "/api/symemo/gradeItem", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, gradeSymemoItem)`,
@@ -764,12 +770,74 @@ func TestCreateHTMLTopicStrictBindingRejectsMissingOrUnknownInputs(t *testing.T)
 	}
 	t.Cleanup(func() { symemoIsBooted = previousBooted; symemoCreateElement = previousCreate })
 
-	for _, body := range []string{`{"title":"Only title"}`, `{"title":"Topic","html":"<p>Body</p>","elementId":"caller"}`, `{"title":1,"html":"<p>Body</p>"}`} {
+	for _, body := range []string{
+		`{"title":"Only title"}`,
+		`{"title":"First","title":"Second","html":"<p>Body</p>"}`,
+		`{"title":"Topic","html":"<p>Body</p>","elementId":"caller"}`,
+		`{"title":1,"html":"<p>Body</p>"}`,
+		`{"title":null,"html":"<p>Body</p>"}`,
+		`{"title":"Topic","html":null}`,
+		`{"title":[],"html":"<p>Body</p>"}`,
+		`{"title":"Topic","html":{}}`,
+	} {
 		response := invokeSymemoHandler(t, createHTMLTopic, body)
 		assertSymemoFailure(t, response, symemoInvalidRequestCode, "Invalid request.")
 	}
 	if calls != 0 {
 		t.Fatalf("strict binding called create facade %d times", calls)
+	}
+}
+
+func TestWritableSymemoStrictBindingAcceptsEmptyStrings(t *testing.T) {
+	previousBooted := symemoIsBooted
+	previousCreate, previousChange := symemoCreateElement, symemoChangeElement
+	symemoIsBooted = func() bool { return true }
+	createCalls, changeCalls := 0, 0
+	symemoCreateElement = func(_ context.Context, command symemo.CreateElementCommand) (symemo.CreateElementResult, error) {
+		createCalls++
+		if command.AddNewTopic.Title != "" || command.AddNewTopic.HTML != "" {
+			t.Fatalf("empty create command = %#v", command)
+		}
+		return symemo.CreateElementResult{ElementID: "20260723090000-topicxx", EventID: "20260723090100-eventxx", CreateAccepted: true, ReviewAccepted: true}, nil
+	}
+	symemoChangeElement = func(_ context.Context, command symemo.ChangeElementCommand) (symemo.ChangeElementResult, error) {
+		changeCalls++
+		switch command.Kind {
+		case symemo.ChangeElementRenameElement:
+			if command.RenameElement.Title != "" {
+				t.Fatalf("empty rename command = %#v", command)
+			}
+			return symemo.ChangeElementResult{Kind: command.Kind, ElementID: command.RenameElement.ElementID, ChangedField: symemo.ChangedElementTitle, CanonicalValue: "", Revision: "rev-title-2", ChangeAccepted: true}, nil
+		case symemo.ChangeElementSaveTopicHTML:
+			if command.SaveTopicHTML.HTML != "" {
+				t.Fatalf("empty save command = %#v", command)
+			}
+			return symemo.ChangeElementResult{Kind: command.Kind, ElementID: command.SaveTopicHTML.ElementID, ChangedField: symemo.ChangedElementMaterial, CanonicalValue: "", Revision: "rev-html-2", ChangeAccepted: true}, nil
+		default:
+			t.Fatalf("unexpected change command = %#v", command)
+			return symemo.ChangeElementResult{}, nil
+		}
+	}
+	t.Cleanup(func() {
+		symemoIsBooted = previousBooted
+		symemoCreateElement, symemoChangeElement = previousCreate, previousChange
+	})
+
+	for _, request := range []struct {
+		handler gin.HandlerFunc
+		body    string
+	}{
+		{createHTMLTopic, `{"title":"","html":""}`},
+		{renameSymemoElement, `{"elementId":"20260723090000-topicxx","expectedTitleRevision":"rev-title","title":""}`},
+		{saveSymemoTopicHTML, `{"elementId":"20260723090000-topicxx","expectedMaterialRevision":"rev-html","html":""}`},
+	} {
+		response := invokeSymemoHandler(t, request.handler, request.body)
+		if code := envelopeCode(t, response); code != 0 {
+			t.Fatalf("empty-string request failed: %s", response.Body.String())
+		}
+	}
+	if createCalls != 1 || changeCalls != 2 {
+		t.Fatalf("empty-string facade calls create=%d change=%d", createCalls, changeCalls)
 	}
 }
 
@@ -793,6 +861,285 @@ func TestCreateHTMLTopicFailureEnvelopeCarriesSafeCreateFields(t *testing.T) {
 	for _, forbidden := range []string{"H:\\secret", "memo.db", "<script>"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("failure body leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
+func TestChangeElementRoutesUseStrictChangeFacade(t *testing.T) {
+	previousBooted := symemoIsBooted
+	previousChange := symemoChangeElement
+	symemoIsBooted = func() bool { return true }
+	calls := 0
+	symemoChangeElement = func(_ context.Context, command symemo.ChangeElementCommand) (symemo.ChangeElementResult, error) {
+		calls++
+		switch command.Kind {
+		case symemo.ChangeElementRenameElement:
+			if command.RenameElement.ElementID != "20260723090000-topicxx" || command.RenameElement.ExpectedTitleRevision != "rev-title" || command.RenameElement.Title != "Renamed" || command.SaveTopicHTML != (symemo.SaveTopicHTMLCommand{}) {
+				t.Fatalf("rename command = %#v", command)
+			}
+			return symemo.ChangeElementResult{Kind: command.Kind, ElementID: command.RenameElement.ElementID, ChangedField: symemo.ChangedElementTitle, CanonicalValue: "Renamed", Revision: "rev-title-2", Changed: true, ChangeAccepted: true}, nil
+		case symemo.ChangeElementSaveTopicHTML:
+			if command.SaveTopicHTML.ElementID != "20260723090000-topicxx" || command.SaveTopicHTML.ExpectedMaterialRevision != "rev-html" || command.SaveTopicHTML.HTML != "<p>Body</p>" || command.RenameElement != (symemo.RenameElementCommand{}) {
+				t.Fatalf("save command = %#v", command)
+			}
+			return symemo.ChangeElementResult{Kind: command.Kind, ElementID: command.SaveTopicHTML.ElementID, ChangedField: symemo.ChangedElementMaterial, CanonicalValue: "<p>Body</p>", Revision: "rev-html-2", CleaningPolicyVersion: "siyuanmemo-topic-html-v1", Changed: true, ChangeAccepted: true}, nil
+		default:
+			t.Fatalf("unexpected change command = %#v", command)
+			return symemo.ChangeElementResult{}, nil
+		}
+	}
+	t.Cleanup(func() {
+		symemoIsBooted = previousBooted
+		symemoChangeElement = previousChange
+	})
+
+	rename := invokeSymemoHandler(t, renameSymemoElement, `{"elementId":"20260723090000-topicxx","expectedTitleRevision":"rev-title","title":"Renamed"}`)
+	if code := envelopeCode(t, rename); code != 0 || !strings.Contains(rename.Body.String(), `"changedField":"title"`) {
+		t.Fatalf("rename envelope = %s", rename.Body.String())
+	}
+	save := invokeSymemoHandler(t, saveSymemoTopicHTML, `{"elementId":"20260723090000-topicxx","expectedMaterialRevision":"rev-html","html":"<p>Body</p>"}`)
+	if code := envelopeCode(t, save); code != 0 || !strings.Contains(save.Body.String(), `"changedField":"material"`) {
+		t.Fatalf("save envelope = %s", save.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("change facade calls = %d", calls)
+	}
+}
+
+func TestChangeElementStrictBindingRejectsBeforeBootWithoutRuntimeCall(t *testing.T) {
+	previousBooted := symemoIsBooted
+	previousChange := symemoChangeElement
+	symemoIsBooted = func() bool { return false }
+	calls := 0
+	symemoChangeElement = func(context.Context, symemo.ChangeElementCommand) (symemo.ChangeElementResult, error) {
+		calls++
+		return symemo.ChangeElementResult{}, nil
+	}
+	t.Cleanup(func() {
+		symemoIsBooted = previousBooted
+		symemoChangeElement = previousChange
+	})
+
+	tests := []struct {
+		handler gin.HandlerFunc
+		body    string
+	}{
+		{renameSymemoElement, `{"elementId":"20260723090000-topicxx","expectedTitleRevision":"rev-title"}`},
+		{renameSymemoElement, `{"elementId":"20260723090000-topicxx","expectedTitleRevision":"rev-title","title":"Renamed","extra":true}`},
+		{renameSymemoElement, `{"elementId":"20260723090000-topicxx","elementId":"20260723090001-otherxx","expectedTitleRevision":"rev-title","title":"Renamed"}`},
+		{renameSymemoElement, `{"elementId":"20260723090000-topicxx","expectedTitleRevision":42,"title":"Renamed"}`},
+		{renameSymemoElement, `{"elementId":null,"expectedTitleRevision":"rev-title","title":"Renamed"}`},
+		{renameSymemoElement, `{"elementId":"20260723090000-topicxx","expectedTitleRevision":null,"title":"Renamed"}`},
+		{renameSymemoElement, `{"elementId":"20260723090000-topicxx","expectedTitleRevision":"rev-title","title":null}`},
+		{renameSymemoElement, `{"elementId":{},"expectedTitleRevision":"rev-title","title":"Renamed"}`},
+		{renameSymemoElement, `{"elementId":"20260723090000-topicxx","expectedTitleRevision":[],"title":"Renamed"}`},
+		{saveSymemoTopicHTML, `{"elementId":"20260723090000-topicxx","expectedMaterialRevision":"rev-html"}`},
+		{saveSymemoTopicHTML, `{"elementId":"20260723090000-topicxx","expectedMaterialRevision":"rev-html","html":"<p>Body</p>","extra":true}`},
+		{saveSymemoTopicHTML, `{"elementId":"20260723090000-topicxx","expectedMaterialRevision":"rev-html","html":"<p>One</p>","html":"<p>Two</p>"}`},
+		{saveSymemoTopicHTML, `{"elementId":"20260723090000-topicxx","expectedMaterialRevision":"rev-html","html":false}`},
+		{saveSymemoTopicHTML, `{"elementId":null,"expectedMaterialRevision":"rev-html","html":"<p>Body</p>"}`},
+		{saveSymemoTopicHTML, `{"elementId":"20260723090000-topicxx","expectedMaterialRevision":null,"html":"<p>Body</p>"}`},
+		{saveSymemoTopicHTML, `{"elementId":"20260723090000-topicxx","expectedMaterialRevision":"rev-html","html":null}`},
+		{saveSymemoTopicHTML, `{"elementId":[],"expectedMaterialRevision":"rev-html","html":"<p>Body</p>"}`},
+		{saveSymemoTopicHTML, `{"elementId":"20260723090000-topicxx","expectedMaterialRevision":{},"html":"<p>Body</p>"}`},
+	}
+	for _, test := range tests {
+		response := invokeSymemoHandler(t, test.handler, test.body)
+		assertSymemoFailure(t, response, symemoInvalidRequestCode, "Invalid request.")
+	}
+	if calls != 0 {
+		t.Fatalf("strict binding called change facade %d times", calls)
+	}
+}
+
+func TestChangeElementValidPreBootUsesNativeProgressWithoutRuntimeCall(t *testing.T) {
+	previousBooted, previousProgress, previousMessage := symemoIsBooted, symemoBootProgress, symemoBootMessage
+	previousChange := symemoChangeElement
+	symemoIsBooted = func() bool { return false }
+	symemoBootProgress = func() int { return 64 }
+	symemoBootMessage = func(progress int) string { return fmt.Sprintf("Loading %d%%", progress) }
+	calls := 0
+	symemoChangeElement = func(context.Context, symemo.ChangeElementCommand) (symemo.ChangeElementResult, error) {
+		calls++
+		return symemo.ChangeElementResult{}, nil
+	}
+	t.Cleanup(func() {
+		symemoIsBooted, symemoBootProgress, symemoBootMessage = previousBooted, previousProgress, previousMessage
+		symemoChangeElement = previousChange
+	})
+
+	response := invokeSymemoHandler(t, renameSymemoElement, `{"elementId":"20260723090000-topicxx","expectedTitleRevision":"rev-title","title":"Renamed"}`)
+	var envelope struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			CloseTimeout int    `json:"closeTimeout"`
+			ErrorCode    string `json:"errorCode"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Code != -1 || envelope.Msg != "Loading 64%" || envelope.Data.CloseTimeout != 5000 || envelope.Data.ErrorCode != "" || calls != 0 {
+		t.Fatalf("pre-boot change response=%#v calls=%d", envelope, calls)
+	}
+}
+
+func TestChangeElementFailureEnvelopeCarriesConflictWithoutCanonicalValue(t *testing.T) {
+	previousBooted := symemoIsBooted
+	previousChange := symemoChangeElement
+	symemoIsBooted = func() bool { return true }
+	symemoChangeElement = func(context.Context, symemo.ChangeElementCommand) (symemo.ChangeElementResult, error) {
+		return symemo.ChangeElementResult{}, &symemo.DomainError{
+			Code:            symemo.ErrElementRevisionConflict,
+			ElementID:       "20260723090000-topicxx",
+			ChangedField:    symemo.ChangedElementMaterial,
+			CurrentRevision: "rev-current",
+			Retryable:       false,
+			ChangeAccepted:  false,
+		}
+	}
+	t.Cleanup(func() {
+		symemoIsBooted = previousBooted
+		symemoChangeElement = previousChange
+	})
+
+	response := invokeSymemoHandler(t, saveSymemoTopicHTML, `{"elementId":"20260723090000-topicxx","expectedMaterialRevision":"rev-stale","html":"<p>Submitted</p>"}`)
+	var envelope struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			ErrorCode       string `json:"errorCode"`
+			Retryable       bool   `json:"retryable"`
+			ChangeAccepted  bool   `json:"changeAccepted"`
+			ElementID       string `json:"elementId"`
+			ChangedField    string `json:"changedField"`
+			CurrentRevision string `json:"currentRevision"`
+			CanonicalValue  string `json:"canonicalValue"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Code != -1 || envelope.Msg != "The Topic changed elsewhere." || envelope.Data.ErrorCode != string(symemo.ErrElementRevisionConflict) || envelope.Data.Retryable || envelope.Data.ChangeAccepted || envelope.Data.ElementID != "20260723090000-topicxx" || envelope.Data.ChangedField != "material" || envelope.Data.CurrentRevision != "rev-current" || envelope.Data.CanonicalValue != "" {
+		t.Fatalf("conflict envelope = %#v", envelope)
+	}
+	if strings.Contains(response.Body.String(), "Submitted") {
+		t.Fatalf("conflict leaked submitted HTML: %s", response.Body.String())
+	}
+	var rawEnvelope struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &rawEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	wantKeys := []string{"changeAccepted", "changedField", "currentRevision", "elementId", "errorCode", "retryable"}
+	gotKeys := make([]string, 0, len(rawEnvelope.Data))
+	for key := range rawEnvelope.Data {
+		gotKeys = append(gotKeys, key)
+	}
+	sort.Strings(gotKeys)
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Fatalf("conflict failure keys = %v", gotKeys)
+	}
+}
+
+func TestChangeElementAcceptedProjectionFailureEnvelopeCarriesChangeAndRedactsCause(t *testing.T) {
+	previousBooted := symemoIsBooted
+	previousChange := symemoChangeElement
+	symemoIsBooted = func() bool { return true }
+	accepted := symemo.ChangeElementResult{
+		Kind:           symemo.ChangeElementSaveTopicHTML,
+		ElementID:      "20260723090000-topicxx",
+		ChangedField:   symemo.ChangedElementMaterial,
+		CanonicalValue: `<p data-symemo-node-id="20260723090100-nodeaaa">Edited</p>`,
+		Revision:       "rev-html-2",
+		Changed:        true,
+		ChangeAccepted: true,
+	}
+	symemoChangeElement = func(context.Context, symemo.ChangeElementCommand) (symemo.ChangeElementResult, error) {
+		return accepted, &symemo.DomainError{
+			Code:           symemo.ErrProjectionRefreshFailed,
+			ElementID:      accepted.ElementID,
+			ChangedField:   accepted.ChangedField,
+			Retryable:      false,
+			ChangeAccepted: true,
+			AcceptedChange: &accepted,
+			Cause:          errors.New(`H:\secret\memo.db rejected <script>`),
+		}
+	}
+	t.Cleanup(func() {
+		symemoIsBooted = previousBooted
+		symemoChangeElement = previousChange
+	})
+
+	response := invokeSymemoHandler(t, saveSymemoTopicHTML, `{"elementId":"20260723090000-topicxx","expectedMaterialRevision":"rev-html","html":"<p>Edited</p>"}`)
+	var envelope struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			ErrorCode      string                     `json:"errorCode"`
+			Retryable      bool                       `json:"retryable"`
+			ChangeAccepted bool                       `json:"changeAccepted"`
+			ElementID      string                     `json:"elementId"`
+			ChangedField   string                     `json:"changedField"`
+			Change         symemo.ChangeElementResult `json:"change"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Code != -1 || envelope.Msg != "The change was saved, but the Element index could not be refreshed." || envelope.Data.ErrorCode != string(symemo.ErrProjectionRefreshFailed) || envelope.Data.Retryable || !envelope.Data.ChangeAccepted || envelope.Data.ElementID != accepted.ElementID || envelope.Data.ChangedField != "material" || envelope.Data.Change.CanonicalValue != accepted.CanonicalValue || !envelope.Data.Change.ChangeAccepted {
+		t.Fatalf("accepted projection envelope = %#v", envelope)
+	}
+	for _, forbidden := range []string{"H:\\secret", "memo.db", "<script>"} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Fatalf("accepted projection response leaked %q: %s", forbidden, response.Body.String())
+		}
+	}
+}
+
+func TestChangeElementPartialFailureEnvelopeCarriesChangeContextAndRedactsCause(t *testing.T) {
+	previousBooted := symemoIsBooted
+	previousChange := symemoChangeElement
+	symemoIsBooted = func() bool { return true }
+	symemoChangeElement = func(context.Context, symemo.ChangeElementCommand) (symemo.ChangeElementResult, error) {
+		return symemo.ChangeElementResult{}, &symemo.DomainError{
+			Code:           symemo.ErrElementWritePartial,
+			ElementID:      "20260723090000-topicxx",
+			ChangedField:   symemo.ChangedElementMaterial,
+			Retryable:      false,
+			ChangeAccepted: false,
+			Cause:          errors.New(`H:\secret\elements\topic.sme retained <p>Submitted</p>`),
+		}
+	}
+	t.Cleanup(func() {
+		symemoIsBooted = previousBooted
+		symemoChangeElement = previousChange
+	})
+
+	response := invokeSymemoHandler(t, saveSymemoTopicHTML, `{"elementId":"20260723090000-topicxx","expectedMaterialRevision":"rev-html","html":"<p>Submitted</p>"}`)
+	var envelope struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			ErrorCode      string `json:"errorCode"`
+			Retryable      bool   `json:"retryable"`
+			ChangeAccepted bool   `json:"changeAccepted"`
+			ElementID      string `json:"elementId"`
+			ChangedField   string `json:"changedField"`
+			Change         any    `json:"change"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Code != -1 || envelope.Msg != "The change could not be saved." || envelope.Data.ErrorCode != string(symemo.ErrElementWritePartial) || envelope.Data.Retryable || envelope.Data.ChangeAccepted || envelope.Data.ElementID != "20260723090000-topicxx" || envelope.Data.ChangedField != "material" || envelope.Data.Change != nil {
+		t.Fatalf("partial change envelope = %#v", envelope)
+	}
+	for _, forbidden := range []string{"H:\\secret", "topic.sme", "Submitted"} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Fatalf("partial change response leaked %q: %s", forbidden, response.Body.String())
 		}
 	}
 }

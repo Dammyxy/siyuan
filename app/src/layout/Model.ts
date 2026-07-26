@@ -3,6 +3,7 @@ import {Constants} from "../constants";
 import type {Tab} from "./Tab";
 /// #endif
 import type {App} from "../index";
+import type {ModelTransitionReason, ModelTransitionResult} from "../symemo/types";
 import {kernelError} from "../util/kernelFault";
 import {processMessage} from "../util/processMessage";
 import {reloadSync} from "../util/reloadSync";
@@ -27,6 +28,8 @@ export class Model {
     null;
     /// #endif
     public app: App;
+    public prepareTransition?(reason: ModelTransitionReason): Promise<ModelTransitionResult>;
+    public cleanup?(): void;
 
     constructor(options: {
         app: App,

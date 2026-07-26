@@ -17,12 +17,16 @@ export interface TopicMaterialView {
     kind: string;
     html?: string;
     cleaningPolicyVersion?: string;
+    revision?: string;
 }
 
 export interface ElementDetailView {
     elementId: string;
+    rootElementId?: string;
+    storageKind?: string;
     type: string;
     title: string;
+    titleRevision?: string;
     sourceMode: ElementSourceMode;
     supportStatus: ElementSupportStatus;
     topicMaterial?: TopicMaterialView;
@@ -41,6 +45,137 @@ export type ElementDetailResult =
 export interface ElementReadClient {
     getElementTree(): Promise<ElementTreeResult>;
     getElement(elementId: string): Promise<ElementDetailResult>;
+}
+
+export type ElementAuthoringField = "title" | "material";
+
+export interface CreateHTMLTopicSuccess {
+    ok: true;
+    elementId: string;
+    eventId: string;
+    createAccepted: true;
+    reviewAccepted: boolean;
+    retryable: false;
+}
+
+export interface CreateHTMLTopicFailure {
+    ok: false;
+    failure: {
+        errorCode: string;
+        retryable: boolean;
+        acceptanceUnknown: boolean;
+        acceptedElementId?: string;
+    };
+}
+
+export type CreateHTMLTopicResult = CreateHTMLTopicSuccess | CreateHTMLTopicFailure;
+
+export interface MaterialNodeIdentityAssignment {
+    clientNodeKey: string;
+    nodeId: string;
+}
+
+export interface AcceptedElementChange {
+    kind: "RenameElement" | "SaveTopicHTML";
+    elementId: string;
+    changedField: ElementAuthoringField;
+    canonicalValue: string;
+    revision: string;
+    cleaningPolicyVersion?: string;
+    nodeIdentityAssignments?: MaterialNodeIdentityAssignment[];
+    changed: boolean;
+    changeAccepted: true;
+}
+
+export type ElementChangeFailure =
+    | {kind: "conflict"; elementId: string; changedField: ElementAuthoringField; currentRevision: string}
+    | {kind: "acceptedRecovering"; change: AcceptedElementChange}
+    | {kind: "failed"; errorCode: string; retryable: boolean; acceptanceUnknown: boolean};
+
+export type ElementChangeResult =
+    | {ok: true; change: AcceptedElementChange}
+    | {ok: false; failure: ElementChangeFailure};
+
+export type AuthoringFieldState =
+    | "clean"
+    | "pending"
+    | "saving"
+    | "failed"
+    | "conflict"
+    | "acceptedRecovering";
+
+export type AuthoringStatus =
+    | "clean"
+    | "pending"
+    | "saving"
+    | "failed"
+    | "acceptedRecovering"
+    | "conflict";
+
+export type ModelTransitionReason =
+    | "target-change"
+    | "surface-replacement"
+    | "tab-close"
+    | "batch-close"
+    | "tab-eviction"
+    | "tab-detach"
+    | "cross-window-transfer"
+    | "window-close"
+    | "workspace-switch"
+    | "application-exit"
+    | "update-install";
+
+export type ModelTransitionResult =
+    | {allowed: true}
+    | {allowed: false; reason: "save-failed" | "conflict" | "unavailable" | "busy"};
+
+export interface AuthoringFieldSlot {
+    field: ElementAuthoringField;
+    localValue: string;
+    canonicalBaseline: string;
+    revision: string;
+    localGeneration: number;
+    acknowledgedGeneration: number;
+    dirtySince?: number;
+    state: AuthoringFieldState;
+    submittedGeneration?: number;
+    submittedValue?: string;
+    failure?: {errorCode: string; retryable: boolean; acceptanceUnknown: boolean};
+    conflictRevision?: string;
+}
+
+export interface InFlightElementSave {
+    field: ElementAuthoringField;
+    elementId: string;
+    expectedRevision: string;
+    submittedGeneration: number;
+    submittedValue: string;
+    startedAt: number;
+}
+
+export interface TopicClipboardSnapshot {
+    textHTML: string;
+    textPlain: string;
+    hasHTML: boolean;
+}
+
+export type TopicPasteCommand = "paste" | "pasteAsPlainText" | "pasteAsHTML";
+
+export type TopicPasteFlavor =
+    | {kind: "html"; html: string}
+    | {kind: "markdown"; markdown: string}
+    | {kind: "plainText"; text: string}
+    | {kind: "none"};
+
+export interface TopicPasteAvailability {
+    paste: boolean;
+    pasteAsPlainText: boolean;
+    pasteAsHTML: boolean;
+}
+
+export interface SiyuanMarkdownHTMLFragment {
+    provenance: "siyuan-md2html";
+    html: string;
 }
 
 export type RendererUnavailableReason =

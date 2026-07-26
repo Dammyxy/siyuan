@@ -8,6 +8,7 @@ import {ElementTab} from "./ElementTab";
 import {getSymemoElementId} from "./layoutState";
 import {elementTypeIcon, getElementDisplayTitle} from "./treeState";
 import type {OpenElementOptions, SymemoElementLayoutData} from "./types";
+import {isWindowAuthoringBusy, prepareModelTransition} from "./authoringRegistry";
 
 export interface ElementTabHandle {
     elementId: string;
@@ -18,13 +19,16 @@ export interface ElementOpenHost {
     untitled: string;
     findOrdinaryMatches(elementId: string): ElementTabHandle[];
     focusTab(tab: ElementTabHandle): void;
-    createTab(identity: SymemoElementLayoutData, intent: OpenElementOptions["intent"]): ElementTabHandle | undefined;
+    createTab(
+        identity: SymemoElementLayoutData,
+        intent: OpenElementOptions["intent"],
+    ): Promise<ElementTabHandle | undefined> | ElementTabHandle | undefined;
 }
 
-export const openElementWithHost = (
+export const openElementWithHost = async (
     options: OpenElementOptions,
     host: ElementOpenHost,
-): ElementTabHandle | undefined => {
+): Promise<ElementTabHandle | undefined> => {
     if (typeof options.elementId !== "string" || options.elementId.trim().length === 0) {
         return undefined;
     }
@@ -37,7 +41,7 @@ export const openElementWithHost = (
         }
     }
 
-    return host.createTab({
+    return await host.createTab({
         instance: "SymemoElement",
         elementId: options.elementId,
         title: getElementDisplayTitle(options.title || "", host.untitled),
@@ -60,103 +64,210 @@ const parseLazyElementId = (tab: Tab): string | undefined => {
     return getSymemoElementId(undefined, tab.headElement?.getAttribute("data-initdata") || undefined);
 };
 
-export const createNativeHost = (app: App): ElementOpenHost => ({
-    untitled: window.siyuan.languages.untitled,
-    findOrdinaryMatches(elementId) {
-        const activeWnd = getActiveWnd();
-        return getAllTabs()
-            .map((tab): ElementTabHandle | undefined => {
-                if (tab.model instanceof ElementTab && tab.model.elementId === elementId) {
-                    return {elementId, tab};
-                }
-                return parseLazyElementId(tab) === elementId ? {elementId, tab} : undefined;
-            })
-            .filter((item): item is ElementTabHandle & {tab: Tab} => Boolean(item?.tab))
-            .sort((left, right) => {
-                const leftActive = left.tab.parent === activeWnd ? 1 : 0;
-                const rightActive = right.tab.parent === activeWnd ? 1 : 0;
-                if (leftActive !== rightActive) {
-                    return rightActive - leftActive;
-                }
-                return Number(right.tab.headElement?.getAttribute("data-activetime") || 0) -
-                    Number(left.tab.headElement?.getAttribute("data-activetime") || 0);
-            });
-    },
-    focusTab(handle) {
-        if (!handle.tab?.headElement || pdfIsLoading(handle.tab.parent.element)) {
-            return;
+export type ElementOpenPreparation =
+    | {allowed: true; replacementTabId: string | null}
+    | {allowed: false};
+
+const findReusableTab = (wnd: Wnd, intent: OpenElementOptions["intent"]): Tab | undefined => {
+    if (intent !== "current" && (intent !== "ordinary" || !window.siyuan.config.fileTree.openFilesUseCurrentTab)) {
+        return undefined;
+    }
+    let reusable: Tab | undefined;
+    wnd.children.find((item) => {
+        if (item.headElement?.classList.contains("item--unupdate") && !item.headElement.classList.contains("item--pin")) {
+            reusable = item;
+            return item.headElement.classList.contains("item--focus");
         }
-        handle.tab.parent.switchTab(handle.tab.headElement);
-        handle.tab.parent.showHeading();
-    },
-    createTab(identity, intent) {
-        let wnd = getActiveWnd();
-        if (!wnd) {
-            return undefined;
+        return false;
+    });
+    return reusable;
+};
+
+export const prepareNativeElementOpen = async (
+    intent: OpenElementOptions["intent"],
+): Promise<ElementOpenPreparation> => {
+    if (isWindowAuthoringBusy()) {
+        return {allowed: false};
+    }
+    const wnd = getActiveWnd();
+    if (!wnd || pdfIsLoading(wnd.element)) {
+        return {allowed: false};
+    }
+    return wnd.runTabMutation(async () => {
+        if (isWindowAuthoringBusy() || getActiveWnd() !== wnd || pdfIsLoading(wnd.element)) {
+            return {allowed: false};
         }
-        const splitRequested = intent === "right" || intent === "bottom";
-        const canSplit = Boolean(wnd.children[0]?.headElement);
-        if (splitRequested && canSplit) {
-            const direction = intent === "right" ? "lr" : "tb";
-            const parent = wnd.parent;
-            let targetWnd: Wnd | undefined;
-            if (parent instanceof Layout && parent.children.length > 1 && parent.direction === direction) {
-                const index = parent.children.indexOf(wnd);
-                let adjacent = parent.children[index + 1] || wnd;
-                while (adjacent instanceof Layout) adjacent = adjacent.children[0] as Layout | Wnd;
-                targetWnd = adjacent as Wnd;
+        const reusable = findReusableTab(wnd, intent);
+        if (!reusable) {
+            return {allowed: true, replacementTabId: null};
+        }
+        const result = await prepareModelTransition(reusable.model, "surface-replacement");
+        if (!result.allowed || isWindowAuthoringBusy() || reusable.parent !== wnd || !wnd.children.includes(reusable) ||
+            !reusable.headElement?.classList.contains("item--unupdate") ||
+            reusable.headElement.classList.contains("item--pin")) {
+            return {allowed: false};
+        }
+        return {allowed: true, replacementTabId: reusable.id};
+    });
+};
+
+const findNativeOrdinaryMatches = (elementId: string): Array<ElementTabHandle & {tab: Tab}> => {
+    const activeWnd = getActiveWnd();
+    return getAllTabs()
+        .map((tab): ElementTabHandle | undefined => {
+            if (tab.model instanceof ElementTab && tab.model.elementId === elementId) {
+                return {elementId, tab};
             }
-            if (targetWnd) {
-                if (pdfIsLoading(targetWnd.element)) {
-                    return undefined;
-                }
-                const live = targetWnd.children.find((item) => item.model instanceof ElementTab && item.model.elementId === identity.elementId);
-                if (live) {
-                    targetWnd.switchTab(live.headElement);
-                    targetWnd.showHeading();
-                    return {elementId: identity.elementId, tab: live};
-                }
-                const lazy = getAllTabs().find((item) => parseLazyElementId(item) === identity.elementId);
-                if (lazy) {
-                    lazy.parent.switchTab(lazy.headElement);
-                    lazy.parent.showHeading();
-                    return {elementId: identity.elementId, tab: lazy};
-                }
+            return parseLazyElementId(tab) === elementId ? {elementId, tab} : undefined;
+        })
+        .filter((item): item is ElementTabHandle & {tab: Tab} => Boolean(item?.tab))
+        .sort((left, right) => {
+            const leftActive = left.tab.parent === activeWnd ? 1 : 0;
+            const rightActive = right.tab.parent === activeWnd ? 1 : 0;
+            if (leftActive !== rightActive) {
+                return rightActive - leftActive;
             }
-            wnd = targetWnd || wnd.split(direction);
-        } else if (pdfIsLoading(wnd.element)) {
-            return undefined;
-        }
-        let reusable: Tab | undefined;
-        if (intent === "current" || (intent === "ordinary" && window.siyuan.config.fileTree.openFilesUseCurrentTab)) {
-            wnd.children.find((item) => {
-                if (item.headElement?.classList.contains("item--unupdate") && !item.headElement.classList.contains("item--pin")) {
-                    reusable = item;
-                    return item.headElement.classList.contains("item--focus");
-                }
-                return false;
-            });
-        }
-        const tab = new Tab({
-            title: identity.title,
-            icon: identity.icon,
-            callback: (createdTab) => {
-                createdTab.addModel(new ElementTab({
-                    app,
-                    tab: createdTab,
-                    elementId: identity.elementId,
-                }));
-            },
+            return Number(right.tab.headElement?.getAttribute("data-activetime") || 0) -
+                Number(left.tab.headElement?.getAttribute("data-activetime") || 0);
         });
-        wnd.addTab(tab);
-        if (reusable && reusable !== tab) wnd.removeTab(reusable.id, false, false);
-        wnd.showHeading();
-        return {elementId: identity.elementId, tab};
+};
+
+const focusNativeTab = (handle: ElementTabHandle): void => {
+    if (!handle.tab?.headElement || pdfIsLoading(handle.tab.parent.element)) {
+        return;
+    }
+    handle.tab.parent.switchTab(handle.tab.headElement);
+    handle.tab.parent.showHeading();
+};
+
+type NativeTargetResolution = {
+    queuedWnd: Wnd;
+    splitDirection?: Config.TUILayoutDirection;
+};
+
+const resolveNativeTarget = (intent: OpenElementOptions["intent"]): NativeTargetResolution | undefined => {
+    const activeWnd = getActiveWnd();
+    if (!activeWnd) {
+        return undefined;
+    }
+    const splitRequested = intent === "right" || intent === "bottom";
+    const canSplit = Boolean(activeWnd.children[0]?.headElement);
+    if (!splitRequested || !canSplit) {
+        return {queuedWnd: activeWnd};
+    }
+    const direction: Config.TUILayoutDirection = intent === "right" ? "lr" : "tb";
+    const parent = activeWnd.parent;
+    if (parent instanceof Layout && parent.children.length > 1 && parent.direction === direction) {
+        const index = parent.children.indexOf(activeWnd);
+        let adjacent = parent.children[index + 1] || activeWnd;
+        while (adjacent instanceof Layout) adjacent = adjacent.children[0] as Layout | Wnd;
+        if (adjacent !== activeWnd) {
+            return {queuedWnd: adjacent as Wnd};
+        }
+    }
+    return {queuedWnd: activeWnd, splitDirection: direction};
+};
+
+const createNativeElementTab = (app: App, identity: SymemoElementLayoutData): Tab => new Tab({
+    title: identity.title,
+    icon: identity.icon,
+    callback: (createdTab) => {
+        createdTab.addModel(new ElementTab({
+            app,
+            tab: createdTab,
+            elementId: identity.elementId,
+        }));
     },
 });
 
-export const openElement = (options: OpenElementOptions): ElementTabHandle | undefined => {
-    const opened = openElementWithHost(options, createNativeHost(options.app));
+export const createNativeHost = (app: App, preparation?: ElementOpenPreparation): ElementOpenHost => ({
+    untitled: window.siyuan.languages.untitled,
+    findOrdinaryMatches(elementId) {
+        return findNativeOrdinaryMatches(elementId);
+    },
+    focusTab(handle) {
+        focusNativeTab(handle);
+    },
+    async createTab(identity, intent) {
+        if (isWindowAuthoringBusy()) {
+            return undefined;
+        }
+        for (;;) {
+            const target = resolveNativeTarget(intent);
+            if (!target) {
+                return undefined;
+            }
+            const result = await target.queuedWnd.runTabMutation(async (): Promise<
+                {retry: true} | {retry: false; handle?: ElementTabHandle}
+            > => {
+                if (isWindowAuthoringBusy()) {
+                    return {retry: false};
+                }
+                const currentTarget = resolveNativeTarget(intent);
+                if (!currentTarget || currentTarget.queuedWnd !== target.queuedWnd ||
+                    currentTarget.splitDirection !== target.splitDirection) {
+                    return {retry: true};
+                }
+                if (intent === "ordinary") {
+                    const existing = findNativeOrdinaryMatches(identity.elementId)[0];
+                    if (existing) {
+                        focusNativeTab(existing);
+                        return {retry: false, handle: existing};
+                    }
+                }
+                let wnd = target.queuedWnd;
+                if (!target.splitDirection && pdfIsLoading(wnd.element)) {
+                    return {retry: false};
+                }
+                if (target.splitDirection) {
+                    wnd = wnd.split(target.splitDirection);
+                }
+                const preparedReusable = preparation?.allowed && preparation.replacementTabId
+                    ? wnd.children.find((item) => item.id === preparation.replacementTabId &&
+                        item.headElement?.classList.contains("item--unupdate") &&
+                        !item.headElement.classList.contains("item--pin"))
+                    : undefined;
+                const reusable = preparedReusable || findReusableTab(wnd, intent);
+                let tab: Tab | undefined;
+                if (reusable) {
+                    const replaced = await wnd.replaceTab(reusable, {
+                        operationKey: `open-element:${identity.elementId}:${intent}`,
+                        commit: () => {
+                            tab = createNativeElementTab(app, identity);
+                            wnd.addTab(tab, false, false, undefined, true);
+                            return wnd.children.includes(tab);
+                        },
+                    });
+                    if (!replaced || !tab) {
+                        return {retry: false};
+                    }
+                } else {
+                    tab = createNativeElementTab(app, identity);
+                    wnd.addTab(tab, false, true, undefined, true);
+                    if (!wnd.children.includes(tab)) {
+                        return {retry: false};
+                    }
+                }
+                await wnd.trimOverflowTabs(true);
+                wnd.showHeading();
+                return {retry: false, handle: {elementId: identity.elementId, tab}};
+            });
+            if (result.retry === true) {
+                continue;
+            }
+            return "handle" in result ? result.handle : undefined;
+        }
+    },
+});
+
+export const openElement = async (
+    options: OpenElementOptions,
+    preparation?: ElementOpenPreparation,
+): Promise<ElementTabHandle | undefined> => {
+    if (isWindowAuthoringBusy()) {
+        return undefined;
+    }
+    const opened = await openElementWithHost(options, createNativeHost(options.app, preparation));
     if (opened && window.siyuan.config.fileTree.alwaysSelectOpenedFile) {
         getAllModels().elements.forEach((model) => model.reveal(options.elementId));
     }

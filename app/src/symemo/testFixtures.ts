@@ -45,6 +45,7 @@ export const buildSupportedTopic = (overrides: RawFixtureObject = {}): RawFixtur
     id: FIXTURE_ELEMENT_IDS.supportedTopic,
     type: "topic",
     title: "Supported Topic",
+    titleRevision: "rev-v1-title-fixture",
     processingState: "new",
     payloadSpec: 1,
     payload: {
@@ -52,6 +53,7 @@ export const buildSupportedTopic = (overrides: RawFixtureObject = {}): RawFixtur
             kind: "html",
             html: '<h1 id="topic-title">Supported Topic</h1><p>Body with <a href="#topic-title">a fragment</a>.</p>',
             cleaningPolicyVersion: "siyuanmemo-topic-html-v1",
+            revision: "rev-v1-material-fixture",
         },
         relations: [{type: "hostile-test-only", targetId: "private"}],
     },
@@ -66,6 +68,8 @@ export const buildSupportedTopic = (overrides: RawFixtureObject = {}): RawFixtur
 export const buildItem = (overrides: RawFixtureObject = {}): RawFixtureObject => withOverrides({
     spec: 1,
     id: FIXTURE_ELEMENT_IDS.item,
+    rootElementId: FIXTURE_ELEMENT_IDS.item,
+    storageKind: "rootDocument",
     type: "item",
     title: "Recall Item",
     sourceMode: "opaque",
@@ -90,6 +94,8 @@ export const buildItem = (overrides: RawFixtureObject = {}): RawFixtureObject =>
 export const buildConcept = (overrides: RawFixtureObject = {}): RawFixtureObject => withOverrides({
     spec: 1,
     id: FIXTURE_ELEMENT_IDS.rootConcept,
+    rootElementId: FIXTURE_ELEMENT_IDS.rootConcept,
+    storageKind: "rootDocument",
     type: "concept",
     title: "Root Concept",
     sourceMode: "unknown",
@@ -114,6 +120,8 @@ export const buildBlockBackedTopic = (overrides: RawFixtureObject = {}): RawFixt
 export const buildFutureElement = (overrides: RawFixtureObject = {}): RawFixtureObject => withOverrides({
     spec: 99,
     id: FIXTURE_ELEMENT_IDS.futureParent,
+    rootElementId: FIXTURE_ELEMENT_IDS.futureParent,
+    storageKind: "rootDocument",
     type: "future-collection",
     title: "Future Parent",
     sourceMode: "future-source",

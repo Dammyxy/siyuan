@@ -301,7 +301,7 @@ export const globalCommand = (command: string, app: App) => {
                 }
             });
             if (unmodifiedTabs.length > 0) {
-                closeTabByType(tab, "other", unmodifiedTabs);
+                void closeTabByType(tab, "other", unmodifiedTabs);
             }
         }
         return true;
@@ -364,7 +364,7 @@ export const globalCommand = (command: string, app: App) => {
     if (command === "closeOthers" || command === "closeAll") {
         const tab = getActiveTab(false);
         if (tab) {
-            closeTabByType(tab, command);
+            void closeTabByType(tab, command);
         }
         return true;
     }
@@ -386,11 +386,11 @@ export const globalCommand = (command: string, app: App) => {
             });
             if (command === "closeLeft") {
                 if (leftTabs.length > 0) {
-                    closeTabByType(tab, "other", leftTabs);
+                    void closeTabByType(tab, "other", leftTabs);
                 }
             } else {
                 if (rightTabs.length > 0) {
-                    closeTabByType(tab, "other", rightTabs);
+                    void closeTabByType(tab, "other", rightTabs);
                 }
             }
         }

@@ -264,8 +264,8 @@ export class App {
                     fetchPost("/api/setting/getCloudUser", {}, async userResponse => {
                         window.siyuan.user = userResponse.data;
                         await ensureOnboarding();
-                        setNoteBook(() => {
-                            onGetConfig(response.data.start, this);
+                        setNoteBook(async () => {
+                            await onGetConfig(response.data.start, this);
                             onSetaccount();
                             setTitle("", true);
                             initMessage();

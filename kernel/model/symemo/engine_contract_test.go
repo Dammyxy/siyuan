@@ -29,7 +29,7 @@ func TestEngineContractClosedVariants(t *testing.T) {
 	if _, err := engine.CreateElement(context.Background(), CreateElementCommand{Kind: "CreateItem"}); !hasCode(err, ErrUnsupportedOperation) {
 		t.Fatalf("CreateElement error = %v", err)
 	}
-	if _, err := engine.ChangeElement(context.Background(), ChangeElementCommand{Kind: "RenameElement"}); !hasCode(err, ErrUnsupportedOperation) {
+	if _, err := engine.ChangeElement(context.Background(), ChangeElementCommand{Kind: "UnsupportedChange"}); !hasCode(err, ErrInvalidChangeCommand) {
 		t.Fatalf("ChangeElement error = %v", err)
 	}
 	if _, err := engine.SendToNote(context.Background(), SendToNoteCommand{Kind: "Send"}); !hasCode(err, ErrUnsupportedOperation) {
@@ -77,7 +77,7 @@ func TestCreateElementInvalidAddNewTopicIsNonAcceptedAndLeavesAuthorityUnchanged
 
 	result, err := engine.CreateElement(context.Background(), CreateElementCommand{
 		Kind:        CreateElementAddNewTopic,
-		AddNewTopic: AddNewTopicCommand{Title: "  ", HTML: "<p>Body</p>"},
+		AddNewTopic: AddNewTopicCommand{Title: "Invalid Topic", HTML: "<script>bad()</script>"},
 	})
 	domainErr, ok := AsDomainError(err)
 	if !ok || domainErr.Code != ErrInvalidCreateCommand || domainErr.CreateAccepted || domainErr.ReviewAccepted || domainErr.Retryable || domainErr.ElementID != "" || domainErr.EventID != "" {

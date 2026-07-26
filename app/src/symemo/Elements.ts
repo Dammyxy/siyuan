@@ -5,13 +5,14 @@ import {Menu, MenuItem} from "../menus/Menu";
 import {isOnlyMeta, setStorageVal} from "../protyle/util/compatibility";
 import {Constants} from "../constants";
 import {getDockByType} from "../layout/tabUtil";
-import {getElementTree} from "./api";
-import {openElement} from "./openElement";
+import {createHTMLTopic, getElementTree} from "./api";
+import {openElement, prepareNativeElementOpen} from "./openElement";
 import {reduceOpenGesture} from "./openIntent";
 import {getRevealPlan, normalizeExpandedElementIds, parseStoredExpandedElementIds, shouldPersistExpandedElementIds} from "./treeState";
 import {elementTypeIcon, getElementDisplayTitle} from "./treeState";
 import {beginDockRequest, completeDockFailure, completeDockSuccess, createInitialDockState} from "./dockState";
 import type {ElementsDockState, ElementTreeNodeView} from "./types";
+import {runWindowAuthoringOperation} from "./authoringRegistry";
 
 export class ElementsActivationController {
     public isVisible = false;
@@ -33,6 +34,18 @@ export class ElementsActivationController {
 }
 
 const language = (key: string): string => window.siyuan?.languages?.[key] || "";
+const createHeaderIcon = (type: string, icon: string): HTMLElement => {
+    const button = document.createElement("span");
+    button.className = "block__icon ariaLabel";
+    button.setAttribute("data-type", type);
+    button.setAttribute("data-position", "north");
+    const svg = document.createElement("svg");
+    const use = document.createElement("use");
+    use.setAttribute("xlink:href", "#" + icon);
+    svg.append(use);
+    button.append(svg);
+    return button;
+};
 
 export class Elements extends Model {
     public readonly element: HTMLElement;
@@ -46,6 +59,8 @@ export class Elements extends Model {
     private readonly expanded: Set<string>;
     private requestGeneration = 0;
     private requesting = false;
+    private requestPromise?: Promise<void>;
+    private createPromise?: Promise<void>;
 
     constructor(options: {app: App; tab: Tab}) {
         super({app: options.app});
@@ -53,14 +68,39 @@ export class Elements extends Model {
         this.expanded = new Set(parseStoredExpandedElementIds(window.siyuan.storage[Constants.LOCAL_SYMEMO_ELEMENTS_EXPANDED]));
         this.element = options.tab.panelElement;
         this.element.classList.add("symemo-elements", "fn__flex-column", "file-tree", "dockPanel");
-        this.element.innerHTML = '<div class="block__icons"><div class="block__logo fn__flex-1"><svg><use xlink:href="#iconListTree"></use></svg><span></span></div><span data-type="refresh" class="block__icon ariaLabel" data-position="north"><svg><use xlink:href="#iconRefresh"></use></svg></span><span data-type="collapse" class="block__icon ariaLabel" data-position="north"><svg><use xlink:href="#iconContract"></use></svg></span><span data-type="min" class="block__icon ariaLabel" data-position="north"><svg><use xlink:href="#iconMin"></use></svg></span></div><div class="symemo-elements__body fn__flex-1"></div>';
-        const logo = this.element.querySelector(".block__logo span") as HTMLElement;
-        logo.textContent = language("symemoElements");
-        this.treeElement = this.element.querySelector(".symemo-elements__body") as HTMLElement;
+        const header = document.createElement("div");
+        header.className = "block__icons";
+        const logo = document.createElement("div");
+        logo.className = "block__logo fn__flex-1";
+        const logoIcon = document.createElement("svg");
+        const logoUse = document.createElement("use");
+        logoUse.setAttribute("xlink:href", "#iconListTree");
+        logoIcon.append(logoUse);
+        const logoText = document.createElement("span");
+        logoText.textContent = language("symemoElements");
+        logo.append(logoIcon, logoText);
+        header.append(
+            logo,
+            createHeaderIcon("add", "iconAdd"),
+            createHeaderIcon("refresh", "iconRefresh"),
+            createHeaderIcon("collapse", "iconContract"),
+            createHeaderIcon("min", "iconMin"),
+        );
+        const body = document.createElement("div");
+        body.className = "symemo-elements__body fn__flex-1";
+        this.element.replaceChildren(header, body);
+        this.treeElement = body;
         this.refreshIconElement = this.element.querySelector('[data-type="refresh"] svg') as SVGElement;
+        const addElement = this.element.querySelector('[data-type="add"]');
+        addElement?.setAttribute("aria-label", language("new"));
+        if (window.siyuan.config.readonly) {
+            addElement?.classList.add("fn__none");
+            addElement?.setAttribute("aria-disabled", "true");
+        }
         this.element.querySelector('[data-type="refresh"]')?.setAttribute("aria-label", language("refresh"));
         this.element.querySelector('[data-type="collapse"]')?.setAttribute("aria-label", language("symemoCollapseAll"));
         this.element.querySelector('[data-type="min"]')?.setAttribute("aria-label", language("min"));
+        this.element.querySelector('[data-type="add"]')?.addEventListener("click", () => void this.createEmptyTopic());
         this.element.querySelector('[data-type="refresh"]')?.addEventListener("click", () => void this.loadTree());
         this.element.querySelector('[data-type="collapse"]')?.addEventListener("click", () => {
             this.expanded.clear();
@@ -78,15 +118,31 @@ export class Elements extends Model {
         void this.activation.activate();
     }
 
-    public async loadTree(): Promise<void> {
-        if (this.requesting) return;
+    public loadTree(): Promise<void> {
+        if (this.requesting) return this.requestPromise || Promise.resolve();
         this.requesting = true;
+        this.requestPromise = this.loadTreeInternal().finally(() => {
+            this.requesting = false;
+            this.requestPromise = undefined;
+        });
+        return this.requestPromise;
+    }
+
+    public createEmptyTopic(): Promise<void> {
+        if (window.siyuan.config.readonly) return Promise.resolve();
+        if (this.createPromise) return this.createPromise;
+        this.createPromise = this.createEmptyTopicInternal().finally(() => {
+            this.createPromise = undefined;
+        });
+        return this.createPromise;
+    }
+
+    private async loadTreeInternal(): Promise<void> {
         const generation = ++this.requestGeneration;
         this.refreshIconElement.classList.add("fn__rotate");
         this.state = beginDockRequest(this.state);
         this.renderCurrentState();
         const result = await getElementTree();
-        this.requesting = false;
         if (generation !== this.requestGeneration || !this.element.isConnected) return;
         this.refreshIconElement.classList.remove("fn__rotate");
         if (result.ok === false) {
@@ -103,6 +159,35 @@ export class Elements extends Model {
         this.state = {...completeDockSuccess(this.state, result.nodes), expandedElementIds: normalizedExpanded};
         this.selectedElementId = this.state.selectedElementId;
         this.renderCurrentState();
+    }
+
+    private async createEmptyTopicInternal(): Promise<void> {
+        await runWindowAuthoringOperation("create-html-topic", async (operation) => {
+            if (operation.isCancelled) return;
+            const addIcon = this.element.querySelector('[data-type="add"] svg');
+            addIcon?.classList.add("fn__rotate");
+            try {
+                const preparation = await prepareNativeElementOpen("ordinary");
+                if (!preparation.allowed || operation.isCancelled) return;
+                const result = await createHTMLTopic("", "");
+                if (operation.isCancelled) return;
+                let elementId: string | undefined;
+                if (result.ok === true) {
+                    elementId = result.elementId;
+                } else {
+                    elementId = result.failure.acceptedElementId;
+                }
+                if (!elementId) return;
+                if (this.requestPromise) await this.requestPromise;
+                if (operation.isCancelled) return;
+                await this.loadTree();
+                if (operation.isCancelled) return;
+                await openElement({app: this.app, elementId, title: "", type: "topic", intent: "ordinary", source: "other"}, preparation);
+                this.reveal(elementId);
+            } finally {
+                addIcon?.classList.remove("fn__rotate");
+            }
+        });
     }
 
     public reveal(elementId: string): void {
@@ -221,7 +306,7 @@ export class Elements extends Model {
         this.state = {...this.state, selectedElementId: node.elementId};
         this.renderCurrentState();
         if (action.kind === "open") {
-            openElement({app: this.app, elementId: node.elementId, title: node.title, type: node.type, intent: action.intent, source: "tree"});
+            void openElement({app: this.app, elementId: node.elementId, title: node.title, type: node.type, intent: action.intent, source: "tree"});
         }
     }
 
@@ -242,7 +327,7 @@ export class Elements extends Model {
             label: command.label,
             icon: command.icon,
             click: () => {
-                openElement({app: this.app, elementId: node.elementId, title: node.title, type: node.type, intent: command.intent, source: "menu"});
+                void openElement({app: this.app, elementId: node.elementId, title: node.title, type: node.type, intent: command.intent, source: "menu"});
             },
         }).element));
         menu.popup({x: event.clientX, y: event.clientY});

@@ -17,8 +17,10 @@
 package symemo
 
 import (
+	"crypto/sha256"
 	"errors"
 	"html"
+	"math/big"
 	"net/url"
 	"regexp"
 	"sort"
@@ -35,22 +37,77 @@ const topicHTMLCleaningPolicyVersion = "siyuanmemo-topic-html-v1"
 var newTopicHTMLNodeID = ast.NewNodeID
 
 var safeCSSScalarPattern = regexp.MustCompile(`^[#a-zA-Z0-9\s.,()%+-]+$`)
+var topicHTMLClientNodeKeyPattern = regexp.MustCompile(`^client-v1-[0-9]{14}-[A-Za-z0-9_-]{22,}$`)
+
+type topicHTMLIdentityMode int
+
+const (
+	topicHTMLIdentityGenerate topicHTMLIdentityMode = iota
+	topicHTMLIdentityEdit
+)
+
+type topicHTMLCleanOptions struct {
+	allowEmpty         bool
+	identityMode       topicHTMLIdentityMode
+	elementID          string
+	ownedNodeIDs       map[string]bool
+	globalNodeOwners   map[string]string
+	usedNodeIDs        map[string]bool
+	usedClientNodeKeys map[string]bool
+	assignments        []MaterialNodeIdentityAssignment
+	err                error
+}
+
+type topicHTMLCleanResult struct {
+	HTML        string
+	Assignments []MaterialNodeIdentityAssignment
+}
 
 func cleanTopicHTMLFragment(input string) (string, error) {
-	if strings.TrimSpace(input) == "" {
-		return "", errors.New("HTML is empty")
-	}
-	context := &xhtml.Node{Type: xhtml.ElementNode, DataAtom: atom.Body, Data: "body"}
-	nodes, err := xhtml.ParseFragment(strings.NewReader(input), context)
+	result, err := cleanTopicHTMLFragmentWithOptions(input, topicHTMLCleanOptions{identityMode: topicHTMLIdentityGenerate})
 	if err != nil {
 		return "", err
 	}
+	return result.HTML, nil
+}
+
+func cleanTopicHTMLFragmentForCreation(input string) (topicHTMLCleanResult, error) {
+	return cleanTopicHTMLFragmentWithOptions(input, topicHTMLCleanOptions{allowEmpty: true, identityMode: topicHTMLIdentityGenerate})
+}
+
+func cleanTopicHTMLFragmentForEdit(input, elementID string, ownedNodeIDs map[string]bool, globalNodeOwners map[string]string) (topicHTMLCleanResult, error) {
+	return cleanTopicHTMLFragmentWithOptions(input, topicHTMLCleanOptions{
+		allowEmpty:       true,
+		identityMode:     topicHTMLIdentityEdit,
+		elementID:        elementID,
+		ownedNodeIDs:     ownedNodeIDs,
+		globalNodeOwners: globalNodeOwners,
+	})
+}
+
+func cleanTopicHTMLFragmentWithOptions(input string, options topicHTMLCleanOptions) (topicHTMLCleanResult, error) {
+	if strings.TrimSpace(input) == "" {
+		if options.allowEmpty {
+			return topicHTMLCleanResult{}, nil
+		}
+		return topicHTMLCleanResult{}, errors.New("HTML is empty")
+	}
+	options.usedNodeIDs = map[string]bool{}
+	options.usedClientNodeKeys = map[string]bool{}
+	context := &xhtml.Node{Type: xhtml.ElementNode, DataAtom: atom.Body, Data: "body"}
+	nodes, err := xhtml.ParseFragment(strings.NewReader(input), context)
+	if err != nil {
+		return topicHTMLCleanResult{}, err
+	}
 	root := &xhtml.Node{Type: xhtml.DocumentNode}
-	for _, node := range cleanTopicHTMLChildren(nodes) {
+	for _, node := range cleanTopicHTMLChildren(nodes, &options) {
 		appendHTMLChild(root, node)
 	}
-	if err = assignTopicHTMLNodeIDs(root); err != nil {
-		return "", err
+	if options.err != nil {
+		return topicHTMLCleanResult{}, options.err
+	}
+	if err = assignTopicHTMLNodeIDs(root, &options); err != nil {
+		return topicHTMLCleanResult{}, err
 	}
 	var builder strings.Builder
 	renderable := false
@@ -61,20 +118,23 @@ func cleanTopicHTMLFragment(input string) (string, error) {
 		renderTopicHTMLNode(&builder, node)
 	}
 	if !renderable || strings.TrimSpace(builder.String()) == "" {
-		return "", errors.New("HTML has no renderable Topic material")
+		if options.allowEmpty && topicHTMLEmptyIntent(input) {
+			return topicHTMLCleanResult{Assignments: options.assignments}, nil
+		}
+		return topicHTMLCleanResult{}, errors.New("HTML has no renderable Topic material")
 	}
-	return builder.String(), nil
+	return topicHTMLCleanResult{HTML: builder.String(), Assignments: options.assignments}, nil
 }
 
-func cleanTopicHTMLChildren(nodes []*xhtml.Node) []*xhtml.Node {
+func cleanTopicHTMLChildren(nodes []*xhtml.Node, options *topicHTMLCleanOptions) []*xhtml.Node {
 	var out []*xhtml.Node
 	for _, node := range nodes {
-		out = append(out, cleanTopicHTMLNode(node)...)
+		out = append(out, cleanTopicHTMLNode(node, options)...)
 	}
 	return out
 }
 
-func cleanTopicHTMLNode(node *xhtml.Node) []*xhtml.Node {
+func cleanTopicHTMLNode(node *xhtml.Node, options *topicHTMLCleanOptions) []*xhtml.Node {
 	switch node.Type {
 	case xhtml.TextNode:
 		return []*xhtml.Node{{Type: xhtml.TextNode, Data: node.Data}}
@@ -83,13 +143,19 @@ func cleanTopicHTMLNode(node *xhtml.Node) []*xhtml.Node {
 		if topicHTMLDropsSubtree(name) {
 			return nil
 		}
-		children := cleanTopicHTMLChildren(htmlNodeChildren(node))
+		children := cleanTopicHTMLChildren(htmlNodeChildren(node), options)
 		if !topicHTMLKeepsElement(name, node) {
 			return children
 		}
-		cleaned := &xhtml.Node{Type: xhtml.ElementNode, Data: name, Attr: sanitizeTopicHTMLAttrs(name, node.Attr)}
+		cleaned := &xhtml.Node{Type: xhtml.ElementNode, Data: name, Attr: sanitizeTopicHTMLAttrs(name, node.Attr, options)}
 		if topicHTMLMathElement(name, node) && topicHTMLAttrValue(cleaned, "data-content") == "" {
 			return nil
+		}
+		if name == "img" && topicHTMLAttrValue(cleaned, "src") == "" {
+			return nil
+		}
+		if topicHTMLMathElement(name, node) {
+			return []*xhtml.Node{cleaned}
 		}
 		for _, child := range children {
 			appendHTMLChild(cleaned, child)
@@ -153,27 +219,33 @@ func hasTopicHTMLAttr(node *xhtml.Node, key, value string) bool {
 	return false
 }
 
-func sanitizeTopicHTMLAttrs(name string, attrs []xhtml.Attribute) []xhtml.Attribute {
+func sanitizeTopicHTMLAttrs(name string, attrs []xhtml.Attribute, options *topicHTMLCleanOptions) []xhtml.Attribute {
 	values := map[string]string{}
+	stableNodeID := ""
+	clientNodeKey := ""
 	for _, attr := range attrs {
 		key := strings.ToLower(attr.Key)
-		if strings.HasPrefix(key, "on") || key == "data-symemo-node-id" {
+		if strings.HasPrefix(key, "on") {
 			continue
 		}
 		switch key {
+		case "data-symemo-node-id":
+			stableNodeID = strings.TrimSpace(attr.Val)
+		case "data-symemo-client-node-key":
+			clientNodeKey = strings.TrimSpace(attr.Val)
 		case "style":
 			if style := sanitizeTopicHTMLStyle(attr.Val); style != "" {
 				values[key] = style
 			}
 		case "href":
 			if name == "a" {
-				if href := sanitizeTopicHTMLURL(attr.Val); href != "" {
+				if href := sanitizeTopicHTMLURL(attr.Val, true); href != "" {
 					values[key] = href
 				}
 			}
 		case "src":
 			if name == "img" {
-				if src := sanitizeTopicHTMLURL(attr.Val); src != "" {
+				if src := sanitizeTopicHTMLURL(attr.Val, false); src != "" {
 					values[key] = src
 				}
 			}
@@ -218,6 +290,7 @@ func sanitizeTopicHTMLAttrs(name string, attrs []xhtml.Attribute) []xhtml.Attrib
 	if values["data-content"] != "" && values["data-subtype"] == "math" {
 		values["data-symemo-katex-trust"] = "false"
 	}
+	applyTopicHTMLIdentityAttrs(name, stableNodeID, clientNodeKey, values, options)
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
@@ -228,6 +301,51 @@ func sanitizeTopicHTMLAttrs(name string, attrs []xhtml.Attribute) []xhtml.Attrib
 		out = append(out, xhtml.Attribute{Key: key, Val: values[key]})
 	}
 	return out
+}
+
+func applyTopicHTMLIdentityAttrs(name, stableNodeID, clientNodeKey string, values map[string]string, options *topicHTMLCleanOptions) {
+	if stableNodeID == "" && clientNodeKey == "" {
+		return
+	}
+	if options.identityMode != topicHTMLIdentityEdit {
+		return
+	}
+	if !topicHTMLNeedsNodeID(name) {
+		options.err = errors.New("Topic material identity is attached to an unsupported node")
+		return
+	}
+	if stableNodeID != "" && clientNodeKey != "" {
+		options.err = errors.New("Topic material node has both stable and client identities")
+		return
+	}
+	if stableNodeID != "" {
+		owner, ownedGlobally := options.globalNodeOwners[stableNodeID]
+		if !ast.IsNodeIDPattern(stableNodeID) || !options.ownedNodeIDs[stableNodeID] || options.usedNodeIDs[stableNodeID] || (ownedGlobally && owner != options.elementID) {
+			options.err = errors.New("Topic material node identity is invalid")
+			return
+		}
+		options.usedNodeIDs[stableNodeID] = true
+		values["data-symemo-node-id"] = stableNodeID
+		return
+	}
+	if !topicHTMLClientNodeKeyPattern.MatchString(clientNodeKey) || options.usedClientNodeKeys[clientNodeKey] {
+		options.err = errors.New("Topic material client identity is invalid")
+		return
+	}
+	nodeID := deriveTopicHTMLClientNodeID(options.elementID, clientNodeKey)
+	owner, ownedGlobally := options.globalNodeOwners[nodeID]
+	if ownedGlobally && owner != options.elementID {
+		options.err = errors.New("Topic material client identity collides with another Topic")
+		return
+	}
+	if options.usedNodeIDs[nodeID] {
+		options.err = errors.New("Topic material client identity collides in submitted material")
+		return
+	}
+	options.usedClientNodeKeys[clientNodeKey] = true
+	options.usedNodeIDs[nodeID] = true
+	values["data-symemo-node-id"] = nodeID
+	options.assignments = append(options.assignments, MaterialNodeIdentityAssignment{ClientNodeKey: clientNodeKey, NodeID: nodeID})
 }
 
 func topicHTMLMathElement(name string, node *xhtml.Node) bool {
@@ -392,10 +510,10 @@ func isTopicHTMLMathCommandByte(value byte) bool {
 	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value == '@'
 }
 
-func sanitizeTopicHTMLURL(raw string) string {
+func sanitizeTopicHTMLURL(raw string, allowFragment bool) string {
 	trimmed := strings.TrimSpace(raw)
 	if strings.HasPrefix(trimmed, "#") {
-		if len(trimmed) > 1 && !strings.ContainsAny(trimmed, " \t\r\n") {
+		if allowFragment && len(trimmed) > 1 && !strings.ContainsAny(trimmed, " \t\r\n") {
 			return trimmed
 		}
 		return ""
@@ -469,19 +587,18 @@ func isPositiveSmallInteger(value string) bool {
 	return value != "0"
 }
 
-func assignTopicHTMLNodeIDs(root *xhtml.Node) error {
-	generated := map[string]bool{}
+func assignTopicHTMLNodeIDs(root *xhtml.Node, options *topicHTMLCleanOptions) error {
 	var assignmentErr error
 	var walk func(*xhtml.Node)
 	walk = func(node *xhtml.Node) {
 		if assignmentErr != nil {
 			return
 		}
-		if node.Type == xhtml.ElementNode && topicHTMLNeedsNodeID(node.Data) {
+		if node.Type == xhtml.ElementNode && topicHTMLNeedsNodeID(node.Data) && topicHTMLAttrValue(node, "data-symemo-node-id") == "" {
 			id := ""
 			for attempt := 0; attempt < 32; attempt++ {
 				candidate := newTopicHTMLNodeID()
-				if !ast.IsNodeIDPattern(candidate) || generated[candidate] {
+				if !ast.IsNodeIDPattern(candidate) || options.usedNodeIDs[candidate] || options.globalNodeOwners[candidate] != "" {
 					continue
 				}
 				id = candidate
@@ -491,7 +608,7 @@ func assignTopicHTMLNodeIDs(root *xhtml.Node) error {
 				assignmentErr = errors.New("generated Topic material node identity is unavailable")
 				return
 			}
-			generated[id] = true
+			options.usedNodeIDs[id] = true
 			node.Attr = append(node.Attr, xhtml.Attribute{Key: "data-symemo-node-id", Val: id})
 			sort.Slice(node.Attr, func(i, j int) bool { return node.Attr[i].Key < node.Attr[j].Key })
 		}
@@ -501,6 +618,62 @@ func assignTopicHTMLNodeIDs(root *xhtml.Node) error {
 	}
 	walk(root)
 	return assignmentErr
+}
+
+func topicHTMLEmptyIntent(input string) bool {
+	context := &xhtml.Node{Type: xhtml.ElementNode, DataAtom: atom.Body, Data: "body"}
+	nodes, err := xhtml.ParseFragment(strings.NewReader(input), context)
+	if err != nil {
+		return false
+	}
+	for _, node := range nodes {
+		if !topicHTMLNodeEmptyIntent(node) {
+			return false
+		}
+	}
+	return true
+}
+
+func topicHTMLNodeEmptyIntent(node *xhtml.Node) bool {
+	switch node.Type {
+	case xhtml.TextNode:
+		return topicHTMLEmptyText(node.Data)
+	case xhtml.CommentNode:
+		return true
+	case xhtml.ElementNode:
+		name := strings.ToLower(node.Data)
+		switch name {
+		case "html", "body", "p", "div", "br":
+		default:
+			return false
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			if !topicHTMLNodeEmptyIntent(child) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func topicHTMLEmptyText(value string) bool {
+	return strings.TrimFunc(value, func(r rune) bool {
+		return unicode.IsSpace(r) || r == '\u200b' || r == '\ufeff'
+	}) == ""
+}
+
+func deriveTopicHTMLClientNodeID(elementID, clientNodeKey string) string {
+	hash := sha256.Sum256([]byte(elementID + "\x00material-node\x00" + clientNodeKey))
+	value := new(big.Int).SetBytes(hash[:])
+	space := new(big.Int).Exp(big.NewInt(36), big.NewInt(7), nil)
+	value.Mod(value, space)
+	suffix := strings.ToLower(value.Text(36))
+	if len(suffix) < 7 {
+		suffix = strings.Repeat("0", 7-len(suffix)) + suffix
+	}
+	return clientNodeKey[len("client-v1-"):len("client-v1-")+14] + "-" + suffix
 }
 
 func topicHTMLNeedsNodeID(name string) bool {

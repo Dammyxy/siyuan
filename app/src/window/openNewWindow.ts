@@ -8,6 +8,7 @@ import {fetchSyncPost} from "../util/fetch";
 import {showMessage} from "../dialog/message";
 import {getDisplayName, pathPosix} from "../util/pathName";
 import {getSearch} from "../util/functions";
+import {transferTabToNewWindow} from "../symemo/hostTabTransfer";
 
 interface windowOptions {
     position?: {
@@ -19,7 +20,14 @@ interface windowOptions {
     alwaysOnTop?: boolean,
 }
 
-export const openNewWindow = (tab: Tab, options: windowOptions = {}) => {
+export const openNewWindow = async (tab: Tab, options: windowOptions = {}) => {
+    const transfer = await transferTabToNewWindow(tab, options);
+    if (transfer === "transferred") {
+        return true;
+    }
+    if (transfer === "blocked") {
+        return false;
+    }
     const json = {};
     layoutToJSON(tab, json);
     /// #if !BROWSER
@@ -32,7 +40,8 @@ export const openNewWindow = (tab: Tab, options: windowOptions = {}) => {
         url: `${window.location.protocol}//${window.location.host}/stage/build/app/window.html?v=${Constants.SIYUAN_VERSION}&json=${encodeURIComponent(JSON.stringify([json]))}`
     });
     /// #endif
-    tab.parent.removeTab(tab.id);
+    const removed = await tab.parent.removeTab(tab.id, false, true, true, "tab-detach", "open-new-window");
+    return Boolean(removed);
 };
 
 export const openNewWindowById = async (id: string | string[], options: windowOptions = {}) => {

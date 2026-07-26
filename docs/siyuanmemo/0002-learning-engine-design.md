@@ -1,6 +1,7 @@
 # Learning Engine Design
 
 Date: 2026-07-19
+Updated: 2026-07-25
 
 ## Decision
 
@@ -154,7 +155,9 @@ Callers must not assemble business workflows by directly creating and mutating E
 
 `CreateItem` and `CreateClozeItem` are responsible for creating the Item Element, storing prompt/answer material, linking the Item to its source Topic and source range, inheriting Concept defaults, initializing scheduler state, updating indexes, and appending a monthly event. Generated Items are children of the source Topic by default. MVP Item creation includes manual Q/A and a single-blank cloze. Multi-cloze and image occlusion are later features.
 
-`AddNewTopic` creates a new Topic with at most one primary `boundTo` relation. The target may be the current Concept or any current Element when the workflow is intentionally anchored to it. This binding is contextual metadata, not structural parentage, not a mount, and not an Element backlink. Rebinding replaces the previous `boundTo` relation instead of accumulating multiple primary contexts.
+`AddNewTopic` creates authoritative Topic identity and its initial remembered Topic schedule in one accepted operation rather than staging a frontend-only draft. An empty title and empty HTML body are valid creation inputs; the UI presents the localized `Untitled` fallback without persisting that display string as the title. The created empty Topic remains a real scheduled Element until the user explicitly deletes it. Later title or material edits never reinitialize that schedule.
+
+The complete Product v1 command may attach at most one primary `boundTo` relation. The target may be the current Concept or any current Element when the workflow is intentionally anchored to it. This binding is contextual metadata, not structural parentage, not a mount, and not an Element backlink. Rebinding replaces the previous `boundTo` relation instead of accumulating multiple primary contexts. Feature 006's Elements-dock `+` path creates an unbound top-level Topic and does not introduce `boundTo`.
 
 Additional associations are authored as explicit Element links. Those links participate in normal Element backlinks with source context; they must not be encoded as additional `boundTo` values. `AddNewTopic` does not create an Item, Concept, or note block. More specialized creation stays in explicit commands such as `CreateItem`, `CreateClozeItem`, `CreateConcept`, or future import actions.
 
@@ -184,13 +187,13 @@ app/src/symemo/TopicHtmlEditorAdapter
         -> sanitize / normalize / stable node IDs / Topic payload / annotation remap / temp index / monthly event store
 ```
 
-## Topic Reader
+## Topic HTML Surface
 
-Topic material uses a dedicated Topic Reader and HTML material editor. It does not use Protyle.
+HTML-backed Topic material uses one dedicated, always-editable HTML surface. It does not use Protyle and does not have separate reading and editing modes. Block-backed Topic material continues to use its live native Protyle surface.
 
 Topic navigation, Element Browser views, and embedded learning controls are defined in `docs/siyuanmemo/0005-topic-ui-integration-design.md`. The short version is: Topics appear in a native left dock tree, Elements open in main editor-area tabs, Element subsets open in a table-like browser tab, and review starts from the `Learn` button inside an opened Element.
 
-The Topic Reader supports:
+The HTML Topic surface supports:
 
 - rendering cleaned HTML material;
 - preserving headings, paragraphs, lists, tables, links, images, code, and important inline marks;
@@ -203,14 +206,9 @@ The Topic Reader supports:
 - sending a Topic or selected range to SiYuan notes;
 - adjusting priority position, status, and Concept assignment.
 
-The MVP uses TinyMCE as the HTML material editor Adapter. TinyMCE is an implementation detail of the Topic Reader surface, not the Learning Engine interface. The Learning Engine still owns saving, sanitizing, normalization, stable node IDs, annotation remapping, temp indexing, and event logging.
+The MVP uses TinyMCE as the HTML material editor Adapter. TinyMCE remains mounted for ordinary browsing, progressive-reading actions, active Topic learning, and restored tabs. Focus and toolbar state may change, but there is no user-visible read/edit switch and no mode value to persist. The Learning Engine still owns saving, sanitizing, normalization, stable node IDs, annotation remapping, temp indexing, and event logging.
 
-The Topic Reader has two modes:
-
-- reading mode: optimized for selection, extraction, cloze/item creation, splitting, highlights, read-point actions, queue actions, and `SendToNote`;
-- editing mode: opens the current Topic HTML in TinyMCE for material cleanup and source correction.
-
-Editing mode may modify Topic material, but it must not create note blocks. Protyle remains the editor for user-authored notes.
+Editing Topic material must not create note blocks. Protyle remains the editor for user-authored notes.
 
 Editable Topic HTML must contain stable `data-symemo-node-id` attributes on block-level material nodes. Selection ranges and extracted highlights should anchor to these stable IDs plus offsets, not only to fragile DOM paths. `SaveTopicHtml` must preserve or regenerate stable node IDs and then remap or invalidate annotations deliberately.
 

@@ -175,7 +175,7 @@ Required MVP consequences:
 
 - the Reader menu opens from right-click inside Topic HTML whether or not text is selected;
 - selected-text actions include extract, cloze, send to note, highlight, ignore, insert link, parse/convert selected HTML, and set read point;
-- no-selection actions include find in article, paste, go/clear read point, download images, open source/origin, file/source operations, and read/edit mode switching;
+- no-selection actions include find in article, paste, go/clear read point, download images, open source/origin, and file/source operations; HTML Topics remain editable without a read/edit mode switch;
 - `Browser menu` remains reserved for `ElementBrowser` subset/table operations and must not be used as the name for the Topic HTML right-click menu;
 - SuperMemo component-layout features such as display position, dragging mode, OLE, registry member operations, answer flags, and MCT flags are not MVP features.
 

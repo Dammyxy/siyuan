@@ -38,6 +38,13 @@ module.exports = (env, argv) => {
                 chunks: "all",
                 minSize: 20000,
                 cacheGroups: {
+                    symemoTinymce: {
+                        test: /[\\/]node_modules[\\/]tinymce[\\/]/,
+                        name: "symemo-tinymce",
+                        chunks: "async",
+                        priority: 30,
+                        enforce: true,
+                    },
                     // 第三方依赖统一进 vendors chunk（dayjs、iconv-lite、@tiptap/* 等）
                     vendors: {
                         test: /[\\/]node_modules[\\/]/,

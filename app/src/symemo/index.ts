@@ -1,9 +1,15 @@
-export {getElement, getElementTree} from "./api";
+export {createHTMLTopic, getElement, getElementTree} from "./api";
+export {ContentSurfaceHost, getContentSurfaceDecision, isWritableHTMLTopic} from "./ContentSurfaceHost";
 export {Elements} from "./Elements";
 export {ElementTab} from "./ElementTab";
 export {openElement} from "./openElement";
 export {getRenderDecision} from "./renderEligibility";
+export {TopicHtmlSurface} from "./TopicHtmlSurface";
 export {elementTypeIcon, findElementNode, getElementDisplayTitle} from "./treeState";
+export type {
+    ContentSurfaceDecision,
+    ElementContentSurface,
+} from "./ContentSurfaceHost";
 export type {
     ElementDetailResult,
     ElementDetailView,
@@ -28,3 +34,11 @@ export type {
     SymemoElementLayoutData,
     TopicMaterialView,
 } from "./types";
+export type {
+    TopicBlockFormat,
+    TopicFormattingAction,
+    TopicFormattingState,
+    TopicHtmlEditorAdapter,
+    TopicHtmlEditorFactory,
+    TopicHtmlEditorFactoryContext,
+} from "./TopicHtmlSurface";

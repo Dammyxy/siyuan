@@ -1,5 +1,6 @@
 .symemo-elements,
-.symemo-element-tab {
+.symemo-element-tab,
+.symemo-topic-html-surface {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -32,6 +33,116 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+}
+
+.symemo-topic-html-surface {
+  background: var(--b3-theme-background);
+  color: var(--b3-theme-on-background);
+
+  &__title-row {
+    align-items: center;
+    border-bottom: 1px solid var(--b3-theme-surface-lighter);
+    box-sizing: border-box;
+    display: flex;
+    gap: 12px;
+    min-height: 48px;
+    padding: 8px 20px;
+  }
+
+  &__title {
+    flex: 1;
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1.4;
+    min-width: 0;
+    outline: none;
+    overflow-wrap: anywhere;
+
+    &:empty::before {
+      color: var(--b3-theme-on-surface-light);
+      content: attr(data-placeholder);
+    }
+
+    &--invalid {
+      color: var(--b3-theme-error);
+    }
+  }
+
+  &__status {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  &__actions {
+    align-items: center;
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+    min-height: 28px;
+  }
+
+  &__toolbar {
+    align-items: center;
+    border-bottom: 1px solid var(--b3-theme-surface-lighter);
+    display: flex;
+    gap: 2px;
+    min-height: 36px;
+    overflow-x: auto;
+    padding: 4px 16px;
+
+    .block__icon {
+      flex: 0 0 auto;
+      height: 28px;
+      min-width: 28px;
+      width: 28px;
+    }
+  }
+
+  &__heading {
+    flex: 0 0 112px;
+    height: 28px;
+    max-width: 112px;
+  }
+
+  &__menu-form {
+    box-sizing: border-box;
+    display: grid;
+    gap: 8px;
+    min-width: 240px;
+    padding: 8px;
+
+    .b3-text-field {
+      box-sizing: border-box;
+      min-width: 0;
+      width: 100%;
+    }
+
+    .b3-button {
+      justify-self: end;
+    }
+  }
+
+  &__viewport {
+    min-height: 0;
+    min-width: 0;
+    overflow: auto;
+  }
+
+  &__editor {
+    box-sizing: border-box;
+    margin: 0 auto;
+    max-width: 880px;
+    min-height: 280px;
+    min-width: 0;
+    outline: none;
+    overflow-wrap: anywhere;
+    padding: 24px clamp(20px, 5vw, 64px) 64px;
+
+    &:empty::before {
+      color: var(--b3-theme-on-surface-light);
+      content: attr(data-placeholder);
+    }
   }
 }
 

@@ -350,6 +350,7 @@ interface ILocalFiles {
 interface IClipboardData {
     textHTML?: string,
     textPlain?: string,
+    hasHTML?: boolean,
     siyuanHTML?: string,
     files?: File[],
     localFiles?: ILocalFiles[],

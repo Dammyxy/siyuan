@@ -1,0 +1,38 @@
+{
+  "spec": 1,
+  "id": "20260725060000-feat006",
+  "type": "topic",
+  "title": "Root Unknown",
+  "processingState": "new",
+  "payloadSpec": 1,
+  "payload": {
+    "material": {
+      "kind": "html",
+      "html": "<p data-symemo-node-id=\"20260725060001-rootnod\">Root</p>",
+      "cleaningPolicyVersion": "siyuanmemo-topic-html-v1",
+      "futureMaterial": "kept-root-material"
+    },
+    "futurePayload": "kept-root-payload"
+  },
+  "children": [
+    {
+      "spec": 1,
+      "id": "20260725060002-childaa",
+      "type": "topic",
+      "title": "Child Unknown",
+      "processingState": "new",
+      "payloadSpec": 1,
+      "payload": {
+        "material": {
+          "kind": "html",
+          "html": "<p data-symemo-node-id=\"20260725060003-nodeaaa\">Child</p>",
+          "cleaningPolicyVersion": "siyuanmemo-topic-html-v1",
+          "futureMaterial": "kept-child-material"
+        },
+        "futurePayload": "kept-child-payload"
+      },
+      "futureChild": "kept-child"
+    }
+  ],
+  "futureRoot": "kept-root"
+}

@@ -53,9 +53,68 @@ import {recordBeforeResizeTop} from "../protyle/util/resize";
 import {setStorageVal} from "../protyle/util/compatibility";
 import {setTitle} from "../util/processTitle";
 import {dragOverScroll} from "../boot/globalEvent/dragover";
+import {
+    cleanupModelAfterTransition,
+    isTabEvictionCandidate,
+    isWindowAuthoringBusy,
+    normalizeTabOperationKey,
+    prepareModelTransition,
+    type TabOperationKind,
+    WindowTabMutationQueue,
+} from "../symemo/authoringRegistry";
+import type {ModelTransitionReason} from "../symemo/types";
+import type {SymemoElementLayoutData} from "../symemo/types";
+import {
+    transferOfferedTabToCurrentWindow,
+    type DestinationMaterializationResult,
+} from "../symemo/hostTabTransfer";
+
+const materializeTransferredElementTab = (
+    app: App,
+    wnd: Wnd,
+    identity: SymemoElementLayoutData,
+    nextId?: string,
+    onActivate?: () => void,
+): DestinationMaterializationResult => {
+    if (!(wnd instanceof Wnd) || !wnd.element.isConnected) {
+        return false;
+    }
+    const tab = new Tab({
+        icon: identity.icon || "iconFile",
+        title: identity.title || window.siyuan.languages.untitled,
+    });
+    tab.headElement.setAttribute("data-initdata", JSON.stringify(identity));
+    wnd.addTab(tab, false, false, undefined, true);
+    if (nextId) {
+        const nextTab = wnd.children.find((item) => item.id === nextId);
+        if (nextTab && nextTab !== tab) {
+            const currentIndex = wnd.children.indexOf(tab);
+            wnd.children.splice(currentIndex, 1);
+            wnd.children.splice(wnd.children.indexOf(nextTab), 0, tab);
+            nextTab.headElement.before(tab.headElement);
+        }
+    }
+    if (!wnd.children.includes(tab)) {
+        return false;
+    }
+    return {
+        ok: true,
+        activate: () => {
+            if (tab.parent !== wnd || !wnd.children.includes(tab)) {
+                return;
+            }
+            wnd.switchTab(tab.headElement);
+            onActivate?.();
+            void wnd.runTabMutation(() => wnd.trimOverflowTabs(false));
+        },
+    };
+};
 
 export class Wnd {
     private app: App;
+    private readonly tabOperations = new Map<string, Promise<boolean>>();
+    private readonly tabMutationQueue = new WindowTabMutationQueue();
+    private overflowEvictionQueued = false;
     public id: string;
     public parent?: Layout;
     public element: HTMLElement;
@@ -258,7 +317,7 @@ export class Wnd {
             let oldTab = getInstanceById(tabData.id) as Tab;
             const wnd = getInstanceById(it.parentElement.getAttribute("data-id")) as Wnd;
             /// #if !BROWSER
-            if (!oldTab) { // 从主窗口拖拽到页签新窗口
+            if (!oldTab && !tabData.symemoTransferOfferId) { // 从主窗口拖拽到页签新窗口
                 if (wnd instanceof Wnd) {
                     JSONToCenter(app, tabData, wnd);
                     oldTab = wnd.children[wnd.children.length - 1];
@@ -269,10 +328,6 @@ export class Wnd {
                 }
             }
             /// #endif
-            if (!oldTab) {
-                return;
-            }
-
             let nextTabHeaderElement: HTMLElement;
             Array.from(it.firstElementChild.childNodes).find((item: HTMLElement) => {
                 if (item.style?.opacity === "0.38") {
@@ -280,6 +335,22 @@ export class Wnd {
                     return true;
                 }
             });
+
+            if (!oldTab && typeof tabData.symemoTransferOfferId === "string" && wnd instanceof Wnd) {
+                const cloneTabElement = it.querySelector("li[data-clone='true']");
+                const nextId = nextTabHeaderElement?.getAttribute("data-id");
+                void transferOfferedTabToCurrentWindow(tabData.symemoTransferOfferId, (identity) => {
+                    cloneTabElement?.remove();
+                    return materializeTransferredElementTab(app, wnd, identity, nextId, () => {
+                        ipcRenderer.send(Constants.SIYUAN_CMD, "focus");
+                    });
+                }).finally(() => cloneTabElement?.remove());
+                return;
+            }
+
+            if (!oldTab) {
+                return;
+            }
 
             if (!it.contains(oldTab.headElement)) {
                 // 从其他 Wnd 拖动过来
@@ -360,7 +431,7 @@ export class Wnd {
             const tabData = JSON.parse(event.dataTransfer.getData(Constants.SIYUAN_DROP_TAB));
             let oldTab = getInstanceById(tabData.id) as Tab;
             /// #if !BROWSER
-            if (!oldTab) { // 从主窗口拖拽到页签新窗口
+            if (!oldTab && !tabData.symemoTransferOfferId) { // 从主窗口拖拽到页签新窗口
                 JSONToCenter(app, tabData, this);
                 this.children.find(item => {
                     if (item.headElement.getAttribute("data-activetime") === tabData.activeTime) {
@@ -372,6 +443,22 @@ export class Wnd {
                 ipcRenderer.send(Constants.SIYUAN_CMD, "focus");
             }
             /// #endif
+            if (!oldTab && typeof tabData.symemoTransferOfferId === "string" && targetWnd instanceof Wnd) {
+                const splitHalf = dragElement.style.height === "50%" || dragElement.style.width === "50%";
+                const splitDirection: Config.TUILayoutDirection = dragElement.style.height === "50%" ? "tb" : "lr";
+                const splitAfter = splitDirection === "tb"
+                    ? dragElement.style.bottom !== "50%"
+                    : dragElement.style.right !== "50%";
+                void transferOfferedTabToCurrentWindow(tabData.symemoTransferOfferId, (identity) => {
+                    const destination = splitHalf ? targetWnd.split(splitDirection, splitAfter) : targetWnd;
+                    return materializeTransferredElementTab(app, destination, identity, undefined, () => {
+                        resizeTabs();
+                        setTabPosition();
+                        ipcRenderer.send(Constants.SIYUAN_CMD, "focus");
+                    });
+                }).finally(() => dragElement.removeAttribute("style"));
+                return;
+            }
             if (!oldTab) {
                 dragElement.removeAttribute("style");
                 return;
@@ -569,7 +656,13 @@ export class Wnd {
         }
     }
 
-    public addTab(tab: Tab, keepCursor = false, isSaveLayout = true, activeTime?: string) {
+    public addTab(
+        tab: Tab,
+        keepCursor = false,
+        isSaveLayout = true,
+        activeTime?: string,
+        skipOverflowEviction = false,
+    ) {
         if (keepCursor) {
             tab.headElement?.classList.remove("item--focus");
             tab.panelElement.classList.add("fn__none");
@@ -630,7 +723,7 @@ export class Wnd {
         // 移除 centerLayout 中的 empty
         if (this.parent.type === "center" && this.children.length === 2 && !this.children[0].headElement) {
             this.removeTab(this.children[0].id);
-        } else if (this.children.length > window.siyuan.config.fileTree.maxOpenTabCount) {
+        } else if (!skipOverflowEviction && this.children.length > window.siyuan.config.fileTree.maxOpenTabCount) {
             this.removeOverCounter(isSaveLayout);
         }
         /// #if !BROWSER
@@ -708,31 +801,47 @@ export class Wnd {
     }
 
     private removeOverCounter(isSaveLayout = false) {
-        let removeId: string;
-        let openTime: string;
-        let removeCount = 0;
-        this.children.forEach((item, index) => {
-            if (!item.headElement) {
-                return;
-            }
-            if (item.headElement.classList.contains("item--pin") || item.headElement.classList.contains("item--focus")) {
-                return;
-            }
-            removeCount++;
-            if (!openTime) {
-                openTime = item.headElement.getAttribute("data-activetime");
-                removeId = this.children[index].id;
-            } else if (item.headElement.getAttribute("data-activetime") < openTime) {
-                openTime = item.headElement.getAttribute("data-activetime");
-                removeId = this.children[index].id;
-            }
-        });
-        if (removeId) {
-            this.removeTab(removeId, false, false, isSaveLayout);
-            removeCount--;
+        if (this.overflowEvictionQueued) {
+            return;
         }
-        if (removeCount > 0 && this.children.length > window.siyuan.config.fileTree.maxOpenTabCount) {
-            this.removeOverCounter(isSaveLayout);
+        this.overflowEvictionQueued = true;
+        void this.runTabMutation(() => this.trimOverflowTabs(isSaveLayout)).catch((error) => {
+            console.error(error);
+        }).finally(() => {
+            this.overflowEvictionQueued = false;
+        });
+    }
+
+    public runTabMutation<T>(callback: () => Promise<T> | T): Promise<T> {
+        return this.tabMutationQueue.run(callback);
+    }
+
+    public async trimOverflowTabs(isSaveLayout = false): Promise<void> {
+        while (this.children.length > window.siyuan.config.fileTree.maxOpenTabCount) {
+            let candidate: Tab | undefined;
+            let oldestActiveTime: string | undefined;
+            this.children.forEach((item) => {
+                if (!isTabEvictionCandidate(item)) {
+                    return;
+                }
+                const activeTime = item.headElement.getAttribute("data-activetime") || "";
+                if (oldestActiveTime === undefined || activeTime < oldestActiveTime) {
+                    candidate = item;
+                    oldestActiveTime = activeTime;
+                }
+            });
+            if (!candidate) {
+                return;
+            }
+            const removed = await this.removeTab(
+                candidate.id, false, false, isSaveLayout, "tab-eviction", "max-open-tabs",
+            );
+            if (removed) {
+                continue;
+            }
+            if (candidate.parent === this && this.children.includes(candidate) && isTabEvictionCandidate(candidate)) {
+                return;
+            }
         }
     }
 
@@ -764,13 +873,20 @@ export class Wnd {
                 model.destroy();
             }
         }
+        cleanupModelAfterTransition(model);
         model.send("closews", {});
     }
 
-    private removeTabAction = (id: string, isBatchClose = false, animate = true, isSaveLayout = true) => {
-        this.children.find((item, index) => {
+    private removeTabAction = (
+        id: string,
+        isBatchClose = false,
+        animate = true,
+        isSaveLayout = true,
+        closeEmptyDetachedWindow = true,
+    ) => {
+        const removed = this.children.find((item, index) => {
             if (item.id !== id) {
-                return;
+                return false;
             }
             if (window.siyuan.storage[Constants.LOCAL_CLOSED_TABS].length > Constants.SIZE_UNDO) {
                 window.siyuan.storage[Constants.LOCAL_CLOSED_TABS].pop();
@@ -819,7 +935,7 @@ export class Wnd {
                         }
                     });
                 }
-                return;
+                return true;
             }
             if (item.headElement) {
                 if (item.headElement.classList.contains("item--focus")) {
@@ -855,14 +971,19 @@ export class Wnd {
             resizeTabs(false);
             return true;
         });
+        if (!removed) {
+            return false;
+        }
         // 初始化移除窗口，但 centerLayout 还没有赋值 https://ld246.com/article/1658718634416
         if (window.siyuan.layout.centerLayout) {
             const wnd = getWndByLayout(window.siyuan.layout.centerLayout);
             if (!wnd) {
                 /// #if !BROWSER
                 if (isWindow()) {
-                    closeWindow(this.app);
-                    return;
+                    if (closeEmptyDetachedWindow) {
+                        void closeWindow(this.app);
+                    }
+                    return true;
                 }
                 /// #endif
                 const wnd = new Wnd(this.app);
@@ -881,24 +1002,119 @@ export class Wnd {
         ipcRenderer.send(Constants.SIYUAN_CMD, "clearCache");
         setModelsHash();
         /// #endif
+        return true;
     };
 
-    public removeTab(id: string, isBatchClose = false, animate = true, isSaveLayout = true) {
+    public removeTab(
+        id: string,
+        isBatchClose = false,
+        animate = true,
+        isSaveLayout = true,
+        reason: ModelTransitionReason = isBatchClose ? "batch-close" : "tab-close",
+        operationKey = "default",
+    ): boolean | Promise<boolean> {
         for (let index = 0; index < this.children.length; index++) {
             const item = this.children[index];
             if (item.id === id) {
                 if ((item.model instanceof Editor) && item.model.editor?.protyle) {
                     if (item.model.editor.protyle.upload.isUploading) {
                         showMessage(window.siyuan.languages.uploading);
-                        return;
+                        return false;
                     }
-                    this.removeTabAction(id, isBatchClose, animate, isSaveLayout);
+                    return this.removeTabAction(id, isBatchClose, animate, isSaveLayout);
+                } else if (item.model?.prepareTransition) {
+                    return this.runGuardedTabOperation(item, isBatchClose ? "batch-close" : (reason === "tab-eviction" ? "evict" : "close"), reason, operationKey, () =>
+                        this.removeTabAction(id, isBatchClose, animate, isSaveLayout));
                 } else {
-                    this.removeTabAction(id, isBatchClose, animate, isSaveLayout);
+                    return this.removeTabAction(id, isBatchClose, animate, isSaveLayout);
                 }
-                return;
             }
         }
+        return false;
+    }
+
+    public detachTab(
+        tab: Tab,
+        options: {
+            reason?: ModelTransitionReason;
+            operationKey?: string;
+            commit: () => boolean;
+        },
+    ): Promise<boolean> {
+        return this.runGuardedTabOperation(tab, options.reason === "cross-window-transfer" ? "transfer" : "detach", options.reason || "tab-detach", options.operationKey || "default", () => {
+            if (!this.children.includes(tab) || !options.commit()) {
+                return false;
+            }
+            return this.removeTabAction(tab.id, false, false, false, false);
+        });
+    }
+
+    public closeIfEmptyAfterTransfer(): void {
+        if (!isWindow() || this.children.length > 0) {
+            return;
+        }
+        const centerLayout = window.siyuan.layout.centerLayout;
+        if (centerLayout && getWndByLayout(centerLayout)) {
+            return;
+        }
+        void closeWindow(this.app);
+    }
+
+    public replaceTab(
+        tab: Tab,
+        options: {
+            operationKey?: string;
+            commit: () => boolean;
+        },
+    ): Promise<boolean> {
+        return this.runGuardedTabOperation(
+            tab,
+            "replace",
+            "surface-replacement",
+            options.operationKey || "default",
+            () => {
+                if (!this.children.includes(tab) || !options.commit()) {
+                    return false;
+                }
+                return this.removeTabAction(tab.id, false, false, true);
+            },
+        );
+    }
+
+    private runGuardedTabOperation(
+        tab: Tab,
+        kind: TabOperationKind,
+        reason: ModelTransitionReason,
+        operationKey: string,
+        commit: () => boolean,
+    ): Promise<boolean> {
+        if (isWindowAuthoringBusy()) {
+            return Promise.resolve(false);
+        }
+        const key = normalizeTabOperationKey({tabId: tab.id, kind, operationKey});
+        const same = this.tabOperations.get(key);
+        if (same) {
+            return same;
+        }
+        for (const existingKey of this.tabOperations.keys()) {
+            if (existingKey.startsWith(tab.id + ":")) {
+                return Promise.resolve(false);
+            }
+        }
+        const operation = (async () => {
+            const result = await prepareModelTransition(tab.model, reason);
+            if (!result.allowed || isWindowAuthoringBusy() || tab.parent !== this || !this.children.includes(tab)) {
+                return false;
+            }
+            if (kind === "evict" && !isTabEvictionCandidate(tab)) {
+                return false;
+            }
+            return commit();
+        })().finally(() => {
+            this.tabOperations.delete(key);
+        });
+        this.tabOperations.set(key, operation);
+        return operation;
     }
 
     public moveTab(tab: Tab, nextId?: string) {

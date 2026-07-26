@@ -38,6 +38,7 @@ var symemoBootMessage = func(progress int) string {
 var symemoQuery = model.QuerySymemo
 var symemoRunLearningAction = model.RunSymemoLearningAction
 var symemoCreateElement = model.CreateSymemoElement
+var symemoChangeElement = model.ChangeSymemoElement
 
 var symemoLogError = func(code string, cause error) {
 	logging.LogErrorf("SiYuanMemo request failed [code=%s]: %s", code, cause)
@@ -64,10 +65,14 @@ var symemoSafeMessages = map[string]string{
 	string(symemo.ErrQueueAdvanceFailed):              "The review was saved, but the learning queue could not advance.",
 	string(symemo.ErrHistoryRequiresRepair):           "The review history requires repair.",
 	string(symemo.ErrInvalidCreateCommand):            "The Element could not be created.",
+	string(symemo.ErrInvalidChangeCommand):            "The Element change request is invalid.",
+	string(symemo.ErrInvalidElementTitle):             "The Topic title is invalid.",
+	string(symemo.ErrInvalidTopicHTML):                "The Topic HTML is invalid.",
 	string(symemo.ErrElementWritePartial):             "The Element could not be created.",
 	string(symemo.ErrElementNotFound):                 "The Element was not found.",
 	string(symemo.ErrElementSourceUnavailable):        "The Element source is unavailable.",
 	string(symemo.ErrElementSourceAmbiguous):          "The Element source is ambiguous.",
+	string(symemo.ErrElementRevisionConflict):         "The Topic changed elsewhere.",
 	string(symemo.ErrProjectionRebuildFailed):         "The Element index could not be rebuilt.",
 }
 
@@ -84,6 +89,8 @@ func registerSymemoRoutes(ginServer *gin.Engine) {
 	ginServer.Handle("POST", "/api/symemo/getElement", model.CheckAuth, model.CheckAdminRole, getSymemoElement)
 	ginServer.Handle("POST", "/api/symemo/getElementSourceDiagnostics", model.CheckAuth, model.CheckAdminRole, getSymemoElementSourceDiagnostics)
 	ginServer.Handle("POST", "/api/symemo/createHTMLTopic", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, createHTMLTopic)
+	ginServer.Handle("POST", "/api/symemo/renameElement", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, renameSymemoElement)
+	ginServer.Handle("POST", "/api/symemo/saveTopicHTML", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, saveSymemoTopicHTML)
 	ginServer.Handle("POST", "/api/symemo/startLearning", model.CheckAuth, model.CheckAdminRole, startSymemoLearning)
 	ginServer.Handle("POST", "/api/symemo/showAnswer", model.CheckAuth, model.CheckAdminRole, showSymemoAnswer)
 	ginServer.Handle("POST", "/api/symemo/gradeItem", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, gradeSymemoItem)
@@ -116,6 +123,18 @@ type symemoElementDiagnosticsRequest struct {
 type symemoCreateHTMLTopicRequest struct {
 	Title string `json:"title"`
 	HTML  string `json:"html"`
+}
+
+type symemoRenameElementRequest struct {
+	ElementID             string `json:"elementId"`
+	ExpectedTitleRevision string `json:"expectedTitleRevision"`
+	Title                 string `json:"title"`
+}
+
+type symemoSaveTopicHTMLRequest struct {
+	ElementID                string `json:"elementId"`
+	ExpectedMaterialRevision string `json:"expectedMaterialRevision"`
+	HTML                     string `json:"html"`
 }
 
 type symemoGradeRequest struct {
@@ -215,6 +234,52 @@ func createHTMLTopic(c *gin.Context) {
 		return
 	}
 	result, err := symemoCreateElement(c, symemo.CreateElementCommand{Kind: symemo.CreateElementAddNewTopic, AddNewTopic: symemo.AddNewTopicCommand{Title: request.Title, HTML: request.HTML}})
+	if err != nil {
+		writeSymemoError(c, err)
+		return
+	}
+	writeSymemoSuccess(c, result)
+}
+
+func renameSymemoElement(c *gin.Context) {
+	var request symemoRenameElementRequest
+	if !bindRenameElementRequest(c, &request) {
+		return
+	}
+	if !ensureSymemoBooted(c) {
+		return
+	}
+	result, err := symemoChangeElement(c, symemo.ChangeElementCommand{
+		Kind: symemo.ChangeElementRenameElement,
+		RenameElement: symemo.RenameElementCommand{
+			ElementID:             request.ElementID,
+			ExpectedTitleRevision: request.ExpectedTitleRevision,
+			Title:                 request.Title,
+		},
+	})
+	if err != nil {
+		writeSymemoError(c, err)
+		return
+	}
+	writeSymemoSuccess(c, result)
+}
+
+func saveSymemoTopicHTML(c *gin.Context) {
+	var request symemoSaveTopicHTMLRequest
+	if !bindSaveTopicHTMLRequest(c, &request) {
+		return
+	}
+	if !ensureSymemoBooted(c) {
+		return
+	}
+	result, err := symemoChangeElement(c, symemo.ChangeElementCommand{
+		Kind: symemo.ChangeElementSaveTopicHTML,
+		SaveTopicHTML: symemo.SaveTopicHTMLCommand{
+			ElementID:                request.ElementID,
+			ExpectedMaterialRevision: request.ExpectedMaterialRevision,
+			HTML:                     request.HTML,
+		},
+	})
 	if err != nil {
 		writeSymemoError(c, err)
 		return
@@ -374,30 +439,99 @@ func getSymemoCurrentSession(c *gin.Context) {
 
 func bindSymemoRequest(c *gin.Context, request any) bool {
 	if err := c.ShouldBindJSON(request); err != nil {
-		writeSymemoFailure(c, symemoSafeMessage(symemoInvalidRequestCode), map[string]any{"errorCode": symemoInvalidRequestCode, "retryable": false})
+		writeSymemoFailure(c, symemoSafeMessage(symemoInvalidRequestCode), map[string]any{"errorCode": symemoInvalidRequestCode, "retryable": false, "changeAccepted": false})
 		return false
 	}
 	return true
 }
 func bindCreateHTMLTopicRequest(c *gin.Context, request *symemoCreateHTMLTopicRequest) bool {
-	var raw map[string]json.RawMessage
+	return bindSymemoStringFields(c, map[string]*string{
+		"title": &request.Title,
+		"html":  &request.HTML,
+	})
+}
+
+func bindRenameElementRequest(c *gin.Context, request *symemoRenameElementRequest) bool {
+	return bindSymemoStringFields(c, map[string]*string{
+		"elementId":             &request.ElementID,
+		"expectedTitleRevision": &request.ExpectedTitleRevision,
+		"title":                 &request.Title,
+	})
+}
+
+func bindSaveTopicHTMLRequest(c *gin.Context, request *symemoSaveTopicHTMLRequest) bool {
+	return bindSymemoStringFields(c, map[string]*string{
+		"elementId":                &request.ElementID,
+		"expectedMaterialRevision": &request.ExpectedMaterialRevision,
+		"html":                     &request.HTML,
+	})
+}
+
+func bindSymemoStringFields(c *gin.Context, fields map[string]*string) bool {
 	decoder := json.NewDecoder(c.Request.Body)
-	if err := decoder.Decode(&raw); err != nil || len(raw) != 2 {
-		writeSymemoFailure(c, symemoSafeMessage(symemoInvalidRequestCode), map[string]any{"errorCode": symemoInvalidRequestCode, "retryable": false})
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		writeSymemoInvalidRequest(c)
+		return false
+	}
+	values := make(map[string]string, len(fields))
+	for decoder.More() {
+		keyToken, keyErr := decoder.Token()
+		key, keyIsString := keyToken.(string)
+		if keyErr != nil || !keyIsString {
+			writeSymemoInvalidRequest(c)
+			return false
+		}
+		if _, known := fields[key]; !known {
+			writeSymemoInvalidRequest(c)
+			return false
+		}
+		if _, duplicate := values[key]; duplicate {
+			writeSymemoInvalidRequest(c)
+			return false
+		}
+		var rawValue json.RawMessage
+		if decodeErr := decoder.Decode(&rawValue); decodeErr != nil || !symemoRawJSONIsString(rawValue) {
+			writeSymemoInvalidRequest(c)
+			return false
+		}
+		var value string
+		if json.Unmarshal(rawValue, &value) != nil {
+			writeSymemoInvalidRequest(c)
+			return false
+		}
+		values[key] = value
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') || len(values) != len(fields) {
+		writeSymemoInvalidRequest(c)
 		return false
 	}
 	var trailing struct{}
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		writeSymemoFailure(c, symemoSafeMessage(symemoInvalidRequestCode), map[string]any{"errorCode": symemoInvalidRequestCode, "retryable": false})
+	if err = decoder.Decode(&trailing); err != io.EOF {
+		writeSymemoInvalidRequest(c)
 		return false
 	}
-	title, hasTitle := raw["title"]
-	html, hasHTML := raw["html"]
-	if !hasTitle || !hasHTML || json.Unmarshal(title, &request.Title) != nil || json.Unmarshal(html, &request.HTML) != nil {
-		writeSymemoFailure(c, symemoSafeMessage(symemoInvalidRequestCode), map[string]any{"errorCode": symemoInvalidRequestCode, "retryable": false})
-		return false
+	for key, target := range fields {
+		*target = values[key]
 	}
 	return true
+}
+
+func writeSymemoInvalidRequest(c *gin.Context) {
+	writeSymemoFailure(c, symemoSafeMessage(symemoInvalidRequestCode), map[string]any{"errorCode": symemoInvalidRequestCode, "retryable": false, "changeAccepted": false})
+}
+
+func symemoRawJSONIsString(value json.RawMessage) bool {
+	for _, b := range value {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		default:
+			return b == '"'
+		}
+	}
+	return false
 }
 
 func bindSymemoEmptyRequest(c *gin.Context) bool {
@@ -417,21 +551,68 @@ func writeSymemoSuccess(c *gin.Context, data any) {
 func writeSymemoError(c *gin.Context, err error) {
 	if domainErr, ok := symemo.AsDomainError(err); ok {
 		code := string(domainErr.Code)
-		message := symemoSafeMessage(code)
+		message := symemoSafeMessageForDomainError(domainErr)
 		_, known := symemoSafeMessages[code]
 		if !known {
 			symemoLogError(symemoInternalErrorCode, err)
-			writeSymemoFailure(c, symemoSafeMessage(symemoInternalErrorCode), map[string]any{"errorCode": symemoInternalErrorCode, "retryable": false})
+			writeSymemoFailure(c, symemoSafeMessage(symemoInternalErrorCode), map[string]any{"errorCode": symemoInternalErrorCode, "retryable": false, "changeAccepted": false})
 			return
 		}
 		if domainErr.Cause != nil {
 			symemoLogError(code, domainErr.Cause)
 		}
-		writeSymemoFailure(c, message, map[string]any{"errorCode": domainErr.Code, "retryable": domainErr.Retryable, "createAccepted": domainErr.CreateAccepted, "reviewAccepted": domainErr.ReviewAccepted, "elementId": domainErr.ElementID, "eventId": domainErr.EventID, "acceptedEventId": domainErr.AcceptedEventID, "session": domainErr.Session})
+		writeSymemoFailure(c, message, symemoFailureData(domainErr))
 		return
 	}
 	symemoLogError(symemoInternalErrorCode, err)
-	writeSymemoFailure(c, symemoSafeMessage(symemoInternalErrorCode), map[string]any{"errorCode": symemoInternalErrorCode, "retryable": false})
+	writeSymemoFailure(c, symemoSafeMessage(symemoInternalErrorCode), map[string]any{"errorCode": symemoInternalErrorCode, "retryable": false, "changeAccepted": false})
+}
+
+func symemoSafeMessageForDomainError(domainErr *symemo.DomainError) string {
+	if domainErr.Code == symemo.ErrProjectionRefreshFailed && domainErr.AcceptedChange != nil {
+		return "The change was saved, but the Element index could not be refreshed."
+	}
+	if domainErr.ChangedField != "" {
+		switch domainErr.Code {
+		case symemo.ErrDurableWriteFailed, symemo.ErrElementWritePartial:
+			return "The change could not be saved."
+		}
+	}
+	return symemoSafeMessage(string(domainErr.Code))
+}
+
+func symemoFailureData(domainErr *symemo.DomainError) map[string]any {
+	data := map[string]any{
+		"errorCode":      domainErr.Code,
+		"retryable":      domainErr.Retryable,
+		"changeAccepted": domainErr.ChangeAccepted,
+	}
+	if domainErr.ElementID != "" {
+		data["elementId"] = domainErr.ElementID
+	}
+	if domainErr.EventID != "" {
+		data["eventId"] = domainErr.EventID
+	}
+	if domainErr.AcceptedEventID != "" {
+		data["acceptedEventId"] = domainErr.AcceptedEventID
+	}
+	if domainErr.EventID != "" || domainErr.AcceptedEventID != "" || domainErr.CreateAccepted || domainErr.ReviewAccepted {
+		data["createAccepted"] = domainErr.CreateAccepted
+		data["reviewAccepted"] = domainErr.ReviewAccepted
+	}
+	if domainErr.Session != nil {
+		data["session"] = domainErr.Session
+	}
+	if domainErr.ChangedField != "" {
+		data["changedField"] = domainErr.ChangedField
+	}
+	if domainErr.CurrentRevision != "" {
+		data["currentRevision"] = domainErr.CurrentRevision
+	}
+	if domainErr.AcceptedChange != nil {
+		data["change"] = domainErr.AcceptedChange
+	}
+	return data
 }
 
 func writeSymemoFailure(c *gin.Context, message string, data map[string]any) {

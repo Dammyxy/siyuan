@@ -5,15 +5,15 @@ import {ipcRenderer} from "electron";
 import {openHistory} from "../history/history";
 import {getOpenNotebookCount, originalPath, pathPosix, useShell} from "../util/pathName";
 import {fetchNewDailyNote, mountHelp, newDailyNote} from "../util/mount";
-import {fetchPost} from "../util/fetch";
+import {fetchPost, fetchSyncPost} from "../util/fetch";
 import {Constants} from "../constants";
 import {isInAndroid, isInHarmony, isInMobileApp, isIPad, setStorageVal, writeText} from "../protyle/util/compatibility";
 import {openCard} from "../card/openCard";
 import {openSetting} from "../config";
 import {getAllDocks} from "../layout/getAll";
-import {exportLayout, getAllLayout} from "../layout/util";
+import {getAllLayout} from "../layout/util";
 import {getDockByType} from "../layout/tabUtil";
-import {exitSiYuan, lockScreen} from "../dialog/processSystem";
+import {exitSiYuan, lockScreen, switchWorkspaceAndExit} from "../dialog/processSystem";
 import {showMessage} from "../dialog/message";
 import {unicode2Emoji} from "../emoji";
 import {Dock} from "../layout/dock";
@@ -28,6 +28,7 @@ import {openRecentDocs} from "../business/openRecentDocs";
 import * as dayjs from "dayjs";
 import {upDownHint} from "../util/upDownHint";
 import {openDataMigration} from "./dataMigration";
+import {beginHostAuthoringTransition, createHostTransitionIntentKey} from "../symemo/hostAuthoringTransition";
 
 const editLayout = (layoutName?: string) => {
     const dialog = new Dialog({
@@ -279,11 +280,7 @@ export const workspaceMenu = (app: App, rect: DOMRect) => {
                                 return;
                             }
                             confirmDialog(window.siyuan.languages.confirm, `${pathPosix().basename(window.siyuan.config.system.workspaceDir)} -> ${pathPosix().basename(openPath)}?`, () => {
-                                fetchPost("/api/system/setWorkspaceDir", {
-                                    path: openPath
-                                }, () => {
-                                    exitSiYuan(false);
-                                });
+                                void switchWorkspaceAndExit(openPath);
                             });
                         });
                     });
@@ -309,11 +306,7 @@ export const workspaceMenu = (app: App, rect: DOMRect) => {
                                 return;
                             }
                             confirmDialog(window.siyuan.languages.confirm, `${pathPosix().basename(window.siyuan.config.system.workspaceDir)} -> ${pathPosix().basename(item.path)}?`, () => {
-                                fetchPost("/api/system/setWorkspaceDir", {
-                                    path: item.path
-                                }, () => {
-                                    exitSiYuan(false);
-                                });
+                                void switchWorkspaceAndExit(item.path);
                             });
                         });
                     }
@@ -586,10 +579,7 @@ export const workspaceMenu = (app: App, rect: DOMRect) => {
                 icon: "iconQuit",
                 warning: true,
                 click: () => {
-                    exportLayout({
-                        errorExit: true,
-                        cb: exitSiYuan,
-                    });
+                    void exitSiYuan();
                 }
             }).element);
         }
@@ -597,20 +587,52 @@ export const workspaceMenu = (app: App, rect: DOMRect) => {
     });
 };
 
-const openWorkspace = (workspace: string) => {
-    /// #if !BROWSER
-    if (workspace === window.siyuan.config.system.workspaceDir) {
-        return;
+const workspaceOpenPromises = new Map<string, Promise<void>>();
+
+const openWorkspace = (workspace: string): Promise<void> => {
+    const key = createHostTransitionIntentKey({kind: "workspace-open", target: workspace, requester: "workspace-menu"});
+    const existing = workspaceOpenPromises.get(key);
+    if (existing) {
+        return existing;
     }
-    fetchPost("/api/system/setWorkspaceDir", {
-        path: workspace
-    }, () => {
-        ipcRenderer.send(Constants.SIYUAN_OPEN_WORKSPACE, {
-            workspace,
-            lang: window.siyuan.config.appearance.lang
+    const promise = (async () => {
+        /// #if !BROWSER
+        if (workspace === window.siyuan.config.system.workspaceDir) {
+            return;
+        }
+        const lease = await beginHostAuthoringTransition({
+            kind: "workspace-open",
+            target: workspace,
+            requester: "workspace-menu",
+            requestId: `workspace:${Date.now()}`,
         });
-    });
-    /// #endif
+        if (lease.allowed === false) {
+            showMessage(window.siyuan.languages.saveFailed || lease.reason);
+            return;
+        }
+        try {
+            const response = await fetchSyncPost("/api/system/setWorkspaceDir", {path: workspace});
+            if (response.code !== 0) {
+                await lease.cancel();
+                return;
+            }
+            const accepted = await ipcRenderer.invoke(Constants.SIYUAN_OPEN_WORKSPACE, {
+                workspace,
+                lang: window.siyuan.config.appearance.lang,
+                requester: "workspace-menu",
+                token: lease.token,
+            });
+            await lease.cancel();
+            if (!accepted) {
+                showMessage(window.siyuan.languages.saveFailed || "workspace-open-failed");
+            }
+        } catch (_) {
+            await lease.cancel();
+        }
+        /// #endif
+    })().finally(() => workspaceOpenPromises.delete(key));
+    workspaceOpenPromises.set(key, promise);
+    return promise;
 };
 
 const workspaceItem = (item: IWorkspace) => {

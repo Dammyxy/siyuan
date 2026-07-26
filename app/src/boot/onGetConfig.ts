@@ -33,11 +33,16 @@ import {recordBeforeResizeTop} from "../protyle/util/resize";
 import {processSiYuanUri} from "../util/uri";
 import {getAllEditor} from "../layout/getAll";
 import {openDesktopOnboarding} from "../onboarding";
+import {registerAuthoringTransitionRenderer} from "../symemo/hostAuthoringTransition";
+import {registerHostTabTransferRenderer} from "../symemo/hostTabTransfer";
 
-export const onGetConfig = (isStart: boolean, app: App) => {
-    correctHotkey(app);
+export const onGetConfig = async (isStart: boolean, app: App) => {
     document.body.classList.toggle("body--windows", isWindows());
     /// #if !BROWSER
+    if (!await registerAuthoringTransitionRenderer()) {
+        return;
+    }
+    registerHostTabTransferRenderer();
     ipcRenderer.invoke(Constants.SIYUAN_INIT, {
         languages: window.siyuan.languages["_trayMenu"],
         workspaceDir: window.siyuan.config.system.workspaceDir,
@@ -54,6 +59,7 @@ export const onGetConfig = (isStart: boolean, app: App) => {
         },
     });
     /// #endif
+    correctHotkey(app);
     if (!window.siyuan.config.uiLayout || (window.siyuan.config.uiLayout && !window.siyuan.config.uiLayout.left)) {
         window.siyuan.config.uiLayout = Constants.SIYUAN_EMPTY_LAYOUT;
     }
@@ -126,9 +132,9 @@ export const initWindow = async (app: App) => {
         languages: window.siyuan.config.editor.spellcheckLanguages
     });
     const winOnClose = (close = false) => {
-        exportLayout({
-            cb() {
-                if (window.siyuan.config.appearance.closeButtonBehavior === 1 && !close) {
+        if (window.siyuan.config.appearance.closeButtonBehavior === 1 && !close) {
+            exportLayout({
+                cb() {
                     // 最小化
                     if ("windows" === window.siyuan.config.system.os) {
                         ipcRenderer.send(Constants.SIYUAN_CONFIG_TRAY, {
@@ -137,12 +143,12 @@ export const initWindow = async (app: App) => {
                     } else {
                         ipcRenderer.send(Constants.SIYUAN_CMD, "closeButtonBehavior");
                     }
-                } else {
-                    exitSiYuan();
-                }
-            },
-            errorExit: true
-        });
+                },
+                errorExit: false
+            });
+        } else {
+            void exitSiYuan();
+        }
     };
 
     ipcRenderer.send(Constants.SIYUAN_EVENT);

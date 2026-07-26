@@ -1,7 +1,3 @@
-import {Constants} from "../constants";
-/// #if !BROWSER
-import {ipcRenderer} from "electron";
-/// #endif
 import {processMessage} from "./processMessage";
 import {kernelError} from "./kernelFault";
 
@@ -113,13 +109,6 @@ export const fetchPost = (
             kernelError();
             return;
         }
-        /// #if !BROWSER
-        if (url === "/api/system/exit" || url === "/api/system/setWorkspaceDir" || (
-            ["/api/system/setUILayout"].includes(url) && data.errorExit // 内核中断，点关闭处理
-        )) {
-            ipcRenderer.send(Constants.SIYUAN_QUIT, location.port);
-        }
-        /// #endif
     });
 };
 

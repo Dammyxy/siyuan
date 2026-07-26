@@ -8,7 +8,7 @@ import {fetchPost} from "../../util/fetch";
 /// #if !MOBILE
 import {exportLayout} from "../../layout/util";
 /// #endif
-import {exitSiYuan} from "../../dialog/processSystem";
+import {exitSiYuan, switchWorkspaceAndExit} from "../../dialog/processSystem";
 import {showMessage} from "../../dialog/message";
 import {isMac, saveExportFile} from "../../protyle/util/compatibility";
 /// #if MOBILE
@@ -102,9 +102,7 @@ const mountAppWorkspaceSlot = (root: HTMLElement) => {
                             return;
                         }
                         confirmDialog(window.siyuan.languages.confirm, `${pathPosix().basename(window.siyuan.config.system.workspaceDir)} -> ${pathPosix().basename(openPath)}?`, () => {
-                            fetchPost("/api/system/setWorkspaceDir", {path: openPath}, () => {
-                                void exitSiYuan(false);
-                            });
+                            void switchWorkspaceAndExit(openPath);
                         });
                     });
                 });
@@ -161,9 +159,7 @@ const mountAppWorkspaceSlot = (root: HTMLElement) => {
                     break;
                 }
                 confirmDialog(window.siyuan.languages.confirm, `${pathPosix().basename(window.siyuan.config.system.workspaceDir)} -> ${pathPosix().basename(workspacePath)}?`, () => {
-                    fetchPost("/api/system/setWorkspaceDir", {path: workspacePath}, () => {
-                        void exitSiYuan(false);
-                    });
+                    void switchWorkspaceAndExit(workspacePath);
                 });
                 event.preventDefault();
                 event.stopPropagation();
@@ -329,10 +325,7 @@ const registerAppDataGroup = (tab: SettingTabBuilder) => {
                     /// #if MOBILE
                     void exitSiYuan();
                     /// #else
-                    void exportLayout({
-                        errorExit: true,
-                        cb: exitSiYuan,
-                    });
+                    void exitSiYuan();
                     /// #endif
                 });
             });

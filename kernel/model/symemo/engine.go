@@ -36,6 +36,7 @@ type Engine struct {
 	session                       *learningSession
 	unavailable                   atomic.Bool
 	beforeCreateHTMLTopicLock     func()
+	beforeChangeElementLock       func()
 	onLearningActionLockContended func()
 	beforeProjectionPublish       func()
 }
@@ -97,8 +98,26 @@ func (engine *Engine) CreateElement(ctx context.Context, command CreateElementCo
 	}
 }
 
-func (engine *Engine) ChangeElement(context.Context, ChangeElementCommand) (ChangeElementResult, error) {
-	return ChangeElementResult{}, domainError(ErrUnsupportedOperation, "ChangeElement has no variants in item-learning-core", nil)
+func (engine *Engine) ChangeElement(ctx context.Context, command ChangeElementCommand) (ChangeElementResult, error) {
+	if engine.unavailable.Load() {
+		return ChangeElementResult{}, projectionRebuildFailedError()
+	}
+	if engine.config.ReadOnly {
+		return ChangeElementResult{}, changeElementDomainError(ErrUnsupportedOperation, "Element changes are unavailable in read-only mode", "", changedFieldForCommand(command), false, false, nil)
+	}
+	if engine.beforeChangeElementLock != nil {
+		engine.beforeChangeElementLock()
+	}
+	engine.schedulingWriteMu.Lock()
+	defer engine.schedulingWriteMu.Unlock()
+	if engine.unavailable.Load() {
+		return ChangeElementResult{}, projectionRebuildFailedError()
+	}
+	result, err := engine.changeElement(ctx, command)
+	if domainErr, ok := AsDomainError(err); ok && (domainErr.Code == ErrProjectionRefreshFailed || domainErr.Code == ErrElementWritePartial) {
+		engine.unavailable.Store(true)
+	}
+	return result, err
 }
 
 func (engine *Engine) SendToNote(context.Context, SendToNoteCommand) (SendToNoteResult, error) {

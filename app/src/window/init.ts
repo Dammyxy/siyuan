@@ -18,9 +18,15 @@ import {initNativeDialogOverride} from "../protyle/util/compatibility";
 /// #endif
 import {initWindowEvent} from "../boot/globalEvent/event";
 import {getAllEditor} from "../layout/getAll";
+import {registerAuthoringTransitionRenderer} from "../symemo/hostAuthoringTransition";
+import {registerHostTabTransferRenderer, registerTabTransferDestination} from "../symemo/hostTabTransfer";
 
 
-export const init = (app: App) => {
+export const init = async (app: App) => {
+    if (!await registerAuthoringTransitionRenderer()) {
+        return;
+    }
+    registerHostTabTransferRenderer();
     webFrame.setZoomFactor(window.siyuan.storage[Constants.LOCAL_ZOOM]);
     const position = Constants.SIZE_ZOOM.find((item) => item.zoom === window.siyuan.storage[Constants.LOCAL_ZOOM]).position;
     ipcRenderer.send(Constants.SIYUAN_CMD, {
@@ -31,6 +37,38 @@ export const init = (app: App) => {
     initWindowEvent(app);
     fetchPost("/api/system/getEmojiConf", {}, response => {
         window.siyuan.emojis = response.data as IEmoji[];
+
+        const transferId = getSearch("symemoTransferId");
+        if (transferId) {
+            void registerTabTransferDestination(transferId, (identity) => {
+                JSONToCenter(app, {
+                    direction: "lr",
+                    resize: "lr",
+                    size: "auto",
+                    type: "center",
+                    instance: "Layout",
+                    children: [{
+                        instance: "Wnd",
+                        children: [{
+                            instance: "Tab",
+                            title: identity.title || window.siyuan.languages.untitled,
+                            icon: identity.icon || "iconHelp",
+                            pin: false,
+                            active: true,
+                            children: [identity],
+                        }],
+                    }],
+                });
+                window.siyuan.layout.centerLayout = window.siyuan.layout.layout;
+                adjustLayout(window.siyuan.layout.centerLayout);
+                afterLayout(app);
+                setTimeout(() => {
+                    setTabPosition();
+                }, Constants.TIMEOUT_TRANSITION);
+                return true;
+            });
+            return;
+        }
 
         const layout = JSON.parse(sessionStorage.getItem("layout") || "{}");
         if (layout.layout) {

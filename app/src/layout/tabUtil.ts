@@ -25,6 +25,7 @@ import {Constants} from "../constants";
 import {fetchPost} from "../util/fetch";
 import {isWindow} from "../util/functions";
 import {Wnd} from "./Wnd";
+import {removeTabsSequentially} from "../symemo/authoringRegistry";
 
 export const setTabPosition = (onlyPadding = false, onlyClear = false) => {
     const isWindowMode = isWindow();
@@ -452,32 +453,39 @@ const pushRootID = (rootIDs: string[], item: Tab) => {
     }
 };
 
-export const closeTabByType = (tab: Tab, type: "closeOthers" | "closeAll" | "other", tabs?: Tab[]) => {
+export const closeTabByType = async (
+    tab: Tab,
+    type: "closeOthers" | "closeAll" | "other",
+    tabs?: Tab[],
+): Promise<boolean> => {
     const rootIDs: string[] = [];
+    let completed = true;
     if (type === "closeOthers") {
-        for (let index = 0; index < tab.parent.children.length; index++) {
-            const item = tab.parent.children[index];
-            if (item.id !== tab.id && !item.headElement.classList.contains("item--pin")) {
-                pushRootID(rootIDs, item);
-                item.parent.removeTab(item.id, true, false);
-                index--;
-            }
-        }
+        const closeTabs = tab.parent.children.filter((item) => item.id !== tab.id && !item.headElement.classList.contains("item--pin"));
+        const result = await removeTabsSequentially(closeTabs, async (item, index) => {
+            return Boolean(await item.parent.removeTab(
+                item.id, true, false, true, "batch-close", "batch:" + index,
+            ));
+        });
+        result.removed.forEach((item) => pushRootID(rootIDs, item));
+        completed = result.completed;
     } else if (type === "closeAll") {
-        for (let index = 0; index < tab.parent.children.length; index++) {
-            const item = tab.parent.children[index];
-            if (!item.headElement.classList.contains("item--pin")) {
-                pushRootID(rootIDs, item);
-                item.parent.removeTab(item.id, true);
-                index--;
-            }
-        }
-    } else if (tabs.length > 0) {
-        for (let index = 0; index < tabs.length; index++) {
-            if (!tabs[index].headElement.classList.contains("item--pin")) {
-                tabs[index].parent.removeTab(tabs[index].id);
-            }
-        }
+        const closeTabs = tab.parent.children.filter((item) => !item.headElement.classList.contains("item--pin"));
+        const result = await removeTabsSequentially(closeTabs, async (item, index) => {
+            return Boolean(await item.parent.removeTab(
+                item.id, true, false, true, "batch-close", "batch:" + index,
+            ));
+        });
+        result.removed.forEach((item) => pushRootID(rootIDs, item));
+        completed = result.completed;
+    } else if (tabs && tabs.length > 0) {
+        const closeTabs = tabs.filter((item) => !item.headElement?.classList.contains("item--pin"));
+        const result = await removeTabsSequentially(closeTabs, async (item, index) => {
+            return Boolean(await item.parent.removeTab(
+                item.id, false, false, true, "tab-close", "batch:" + index,
+            ));
+        });
+        completed = result.completed;
     }
     // 批量更新文档关闭时间
     if (rootIDs.length > 0) {
@@ -488,4 +496,5 @@ export const closeTabByType = (tab: Tab, type: "closeOthers" | "closeAll" | "oth
     } else if (tab.parent.children.length > 0) {
         tab.parent.switchTab(tab.parent.children[tab.parent.children.length - 1].headElement, true);
     }
+    return completed;
 };

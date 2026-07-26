@@ -178,6 +178,19 @@ func (runtime *symemoRuntime) createElement(ctx context.Context, command symemo.
 	return result, err
 }
 
+func (runtime *symemoRuntime) changeElement(ctx context.Context, command symemo.ChangeElementCommand) (symemo.ChangeElementResult, error) {
+	engine, release, err := runtime.lease()
+	if err != nil {
+		return symemo.ChangeElementResult{}, err
+	}
+	result, err := engine.ChangeElement(ctx, command)
+	release(err)
+	if domainErr, ok := symemo.AsDomainError(err); ok && domainErr.Code == symemo.ErrElementWritePartial {
+		_ = runtime.rebuild(ctx)
+	}
+	return result, err
+}
+
 func (runtime *symemoRuntime) withEngine(operation func(*symemo.Engine) error) error {
 	engine, release, err := runtime.lease()
 	if err != nil {
@@ -216,9 +229,12 @@ func (runtime *symemoRuntime) lease() (*symemo.Engine, func(error), error) {
 	return engine, func(operationErr error) {
 		runtime.mu.Lock()
 		runtime.active--
-		if domainErr, ok := symemo.AsDomainError(operationErr); ok && domainErr.Code == symemo.ErrProjectionRefreshFailed {
-			runtime.state = symemoRuntimeUnavailable
-			runtime.failure = operationErr
+		if domainErr, ok := symemo.AsDomainError(operationErr); ok {
+			switch domainErr.Code {
+			case symemo.ErrProjectionRefreshFailed, symemo.ErrElementWritePartial:
+				runtime.state = symemoRuntimeUnavailable
+				runtime.failure = operationErr
+			}
 		}
 		if runtime.active == 0 {
 			runtime.cond.Broadcast()
@@ -441,6 +457,10 @@ func RunSymemoLearningAction(ctx context.Context, action symemo.LearningAction) 
 }
 func CreateSymemoElement(ctx context.Context, command symemo.CreateElementCommand) (symemo.CreateElementResult, error) {
 	return workspaceSymemoRuntime.createElement(ctx, command)
+}
+
+func ChangeSymemoElement(ctx context.Context, command symemo.ChangeElementCommand) (symemo.ChangeElementResult, error) {
+	return workspaceSymemoRuntime.changeElement(ctx, command)
 }
 
 func CloseSymemoEngine() error {

@@ -1,5 +1,10 @@
 import {fetchSyncPost} from "../util/fetch";
 import {
+    AcceptedElementChange,
+    CreateHTMLTopicResult,
+    ElementAuthoringField,
+    ElementChangeFailure,
+    ElementChangeResult,
     ElementDetailResult,
     ElementDetailView,
     ElementTreeResult,
@@ -9,6 +14,10 @@ import {decodeElementTreeData} from "./treeState";
 
 const TREE_ENDPOINT = "/api/symemo/getElementTree";
 const DETAIL_ENDPOINT = "/api/symemo/getElement";
+const CREATE_ENDPOINT = "/api/symemo/createHTMLTopic";
+const RENAME_ENDPOINT = "/api/symemo/renameElement";
+const SAVE_TOPIC_HTML_ENDPOINT = "/api/symemo/saveTopicHTML";
+const TOPIC_HTML_CLEANING_POLICY = "siyuanmemo-topic-html-v1";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -43,11 +52,21 @@ const decodeTopicMaterial = (value: UnknownRecord): TopicMaterialView | undefine
     if (typeof rawMaterial.cleaningPolicyVersion === "string") {
         material.cleaningPolicyVersion = rawMaterial.cleaningPolicyVersion;
     }
+    if (typeof rawMaterial.revision === "string") {
+        material.revision = rawMaterial.revision;
+    }
     return material;
 };
 
+const isSupportedWritableHTMLTopic = (detail: ElementDetailView): boolean =>
+    detail.type === "topic" && detail.sourceMode === "html" && detail.supportStatus === "supported" &&
+    detail.topicMaterial?.kind === "html" &&
+    detail.topicMaterial.cleaningPolicyVersion === TOPIC_HTML_CLEANING_POLICY;
+
 const decodeDetailData = (value: unknown): ElementDetailView | undefined => {
     if (!isRecord(value) || typeof value.id !== "string" || value.id.trim().length === 0 ||
+        typeof value.rootElementId !== "string" || value.rootElementId.trim().length === 0 ||
+        typeof value.storageKind !== "string" || value.storageKind.trim().length === 0 ||
         typeof value.type !== "string" || typeof value.sourceMode !== "string" ||
         typeof value.supportStatus !== "string") {
         return undefined;
@@ -55,16 +74,25 @@ const decodeDetailData = (value: unknown): ElementDetailView | undefined => {
 
     const detail: ElementDetailView = {
         elementId: value.id,
+        rootElementId: value.rootElementId,
+        storageKind: value.storageKind,
         type: value.type,
         title: normalizeTitle(value.title),
         sourceMode: value.sourceMode,
         supportStatus: value.supportStatus,
     };
+    if (typeof value.titleRevision === "string") {
+        detail.titleRevision = value.titleRevision;
+    }
     if (value.type === "topic") {
         const topicMaterial = decodeTopicMaterial(value);
         if (topicMaterial) {
             detail.topicMaterial = topicMaterial;
         }
+    }
+    if (isSupportedWritableHTMLTopic(detail) &&
+        (!detail.titleRevision || !detail.topicMaterial?.revision)) {
+        return undefined;
     }
     return detail;
 };
@@ -116,3 +144,180 @@ export const getElement = async (elementId: string): Promise<ElementDetailResult
     const element = decodeDetailData(envelope.data);
     return element ? {ok: true, element} : {ok: false, kind: "response"};
 };
+
+const hasString = (value: UnknownRecord, key: string): boolean =>
+    typeof value[key] === "string" && (value[key] as string).trim().length > 0;
+
+const getString = (value: UnknownRecord, key: string): string =>
+    value[key] as string;
+
+const decodeAcceptedChange = (value: unknown): AcceptedElementChange | undefined => {
+    if (!isRecord(value) ||
+        (value.kind !== "RenameElement" && value.kind !== "SaveTopicHTML") ||
+        !hasString(value, "elementId") ||
+        (value.changedField !== "title" && value.changedField !== "material") ||
+        typeof value.canonicalValue !== "string" ||
+        !hasString(value, "revision") ||
+        typeof value.changed !== "boolean" ||
+        value.changeAccepted !== true) {
+        return undefined;
+    }
+
+    const change: AcceptedElementChange = {
+        kind: value.kind as AcceptedElementChange["kind"],
+        elementId: getString(value, "elementId"),
+        changedField: value.changedField as AcceptedElementChange["changedField"],
+        canonicalValue: getString(value, "canonicalValue"),
+        revision: getString(value, "revision"),
+        changed: value.changed,
+        changeAccepted: true,
+    };
+    if (typeof value.cleaningPolicyVersion === "string") {
+        change.cleaningPolicyVersion = value.cleaningPolicyVersion;
+    }
+    if (Array.isArray(value.nodeIdentityAssignments)) {
+        const assignments = value.nodeIdentityAssignments.map((assignment) => {
+            if (!isRecord(assignment) || !hasString(assignment, "clientNodeKey") || !hasString(assignment, "nodeId")) {
+                return undefined;
+            }
+            return {
+                clientNodeKey: getString(assignment, "clientNodeKey"),
+                nodeId: getString(assignment, "nodeId"),
+            };
+        });
+        if (assignments.some((assignment) => !assignment)) {
+            return undefined;
+        }
+        change.nodeIdentityAssignments = assignments as AcceptedElementChange["nodeIdentityAssignments"];
+    }
+    return change;
+};
+
+const decodeChangeFailure = (envelope: UnknownRecord & {code: number; msg: string; data: unknown}): ElementChangeFailure => {
+    if (!isRecord(envelope.data)) {
+        return {kind: "failed", errorCode: "host-rejected", retryable: false, acceptanceUnknown: false};
+    }
+    const data = envelope.data;
+    if (data.errorCode === "element-revision-conflict" &&
+        hasString(data, "elementId") &&
+        (data.changedField === "title" || data.changedField === "material") &&
+        hasString(data, "currentRevision")) {
+        return {
+            kind: "conflict",
+            elementId: getString(data, "elementId"),
+            changedField: data.changedField as ElementAuthoringField,
+            currentRevision: getString(data, "currentRevision"),
+        };
+    }
+    if (data.changeAccepted === true) {
+        const accepted = decodeAcceptedChange(data.change);
+        if (accepted) {
+            return {kind: "acceptedRecovering", change: accepted};
+        }
+    }
+    if (typeof data.errorCode === "string" && typeof data.retryable === "boolean") {
+        return {
+            kind: "failed",
+            errorCode: data.errorCode,
+            retryable: data.retryable,
+            acceptanceUnknown: data.errorCode === "element-write-partial",
+        };
+    }
+    return {kind: "failed", errorCode: "host-rejected", retryable: false, acceptanceUnknown: false};
+};
+
+const changeTransportFailure = (errorCode: "request" | "response"): ElementChangeResult => ({
+    ok: false,
+    failure: {kind: "failed", errorCode, retryable: true, acceptanceUnknown: true},
+});
+
+const createTransportFailure = (errorCode: "request" | "response"): CreateHTMLTopicResult => ({
+    ok: false,
+    failure: {errorCode, retryable: false, acceptanceUnknown: true},
+});
+
+const decodeCreateSuccess = (value: unknown): CreateHTMLTopicResult | undefined => {
+    if (!isRecord(value) || !hasString(value, "elementId") || !hasString(value, "eventId") ||
+        value.createAccepted !== true || typeof value.reviewAccepted !== "boolean" || value.retryable !== false ||
+        !isRecord(value.topic) || value.topic.elementId !== value.elementId) {
+        return undefined;
+    }
+    return {
+        ok: true,
+        elementId: getString(value, "elementId"),
+        eventId: getString(value, "eventId"),
+        createAccepted: true,
+        reviewAccepted: value.reviewAccepted,
+        retryable: false,
+    };
+};
+
+export const createHTMLTopic = async (title: string, html: string): Promise<CreateHTMLTopicResult> => {
+    let envelope: unknown;
+    try {
+        envelope = await fetchSyncPost(CREATE_ENDPOINT, {title, html});
+    } catch (error) {
+        return createTransportFailure(failureKind(error));
+    }
+    if (!hasEnvelopeShape(envelope)) {
+        return createTransportFailure("response");
+    }
+    if (envelope.code !== 0) {
+        if (isRecord(envelope.data) && typeof envelope.data.errorCode === "string" &&
+            typeof envelope.data.retryable === "boolean") {
+            return {
+                ok: false,
+                failure: {
+                    errorCode: envelope.data.errorCode,
+                    retryable: envelope.data.retryable,
+                    acceptanceUnknown: envelope.data.errorCode === "element-write-partial",
+                    acceptedElementId: envelope.data.createAccepted === true && typeof envelope.data.elementId === "string"
+                        ? envelope.data.elementId
+                        : undefined,
+                },
+            };
+        }
+        return {ok: false, failure: {errorCode: "host-rejected", retryable: false, acceptanceUnknown: false}};
+    }
+    return decodeCreateSuccess(envelope.data) || createTransportFailure("response");
+};
+
+const changeElement = async (
+    endpoint: string,
+    request: UnknownRecord,
+): Promise<ElementChangeResult> => {
+    let envelope: unknown;
+    try {
+        envelope = await fetchSyncPost(endpoint, request);
+    } catch (error) {
+        return changeTransportFailure(failureKind(error));
+    }
+    if (!hasEnvelopeShape(envelope)) {
+        return changeTransportFailure("response");
+    }
+    if (envelope.code !== 0) {
+        return {ok: false, failure: decodeChangeFailure(envelope)};
+    }
+    const change = decodeAcceptedChange(envelope.data);
+    return change ? {ok: true, change} : changeTransportFailure("response");
+};
+
+export const renameElement = async (
+    elementId: string,
+    expectedTitleRevision: string,
+    title: string,
+): Promise<ElementChangeResult> => changeElement(RENAME_ENDPOINT, {
+    elementId,
+    expectedTitleRevision,
+    title,
+});
+
+export const saveTopicHTML = async (
+    elementId: string,
+    expectedMaterialRevision: string,
+    html: string,
+): Promise<ElementChangeResult> => changeElement(SAVE_TOPIC_HTML_ENDPOINT, {
+    elementId,
+    expectedMaterialRevision,
+    html,
+});

@@ -20,7 +20,7 @@ import {isBrowser, isWindow, setToolbarLeftMac} from "../util/functions";
 import {fetchPost} from "../util/fetch";
 import {needSubscribe} from "../util/needSubscribe";
 import * as dayjs from "dayjs";
-import {exportLayout, resizeTopBar} from "./util";
+import {resizeTopBar} from "./util";
 import {setTabPosition} from "./tabUtil";
 import {commandPanel} from "../boot/globalEvent/command/panel";
 import {openTopBarMenu} from "../plugin/openTopBarMenu";
@@ -168,10 +168,7 @@ export const initBar = (app: App) => {
                 break;
             } else if (targetId === "barExit") {
                 event.stopPropagation();
-                exportLayout({
-                    errorExit: true,
-                    cb: exitSiYuan,
-                });
+                void exitSiYuan();
                 break;
             } else if (targetId === "barMode") {
                 if (!window.siyuan.menus.menu.element.classList.contains("fn__none") &&

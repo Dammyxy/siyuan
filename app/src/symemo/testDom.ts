@@ -23,6 +23,13 @@ export class TestClassList {
         return this.values.has(token);
     }
 
+    public toggle(token: string, force?: boolean) {
+        const shouldAdd = force ?? !this.values.has(token);
+        if (shouldAdd) this.add(token);
+        else this.remove(token);
+        return shouldAdd;
+    }
+
     public replaceFrom(value: string) {
         this.values.clear();
         value.split(/\s+/).forEach((token) => this.add(token));
@@ -54,15 +61,21 @@ export class TestElement {
     public isConnected = true;
     public textContent = "";
     public title = "";
+    public value = "";
     public scrollTop = 0;
     public innerHTMLAssignments = 0;
     public scrolled = false;
+    public focused = false;
     private html = "";
     private readonly attributes = new Map<string, string>();
     private readonly listeners = new Map<string, Listener[]>();
     private innerHTMLBuilder?: (element: TestElement, html: string) => void;
 
-    constructor(public readonly ownerDocument: TestDocument, public readonly tagName = "DIV") {}
+    constructor(
+        public readonly ownerDocument: TestDocument,
+        public readonly tagName = "DIV",
+        public readonly namespaceURI = "http://www.w3.org/1999/xhtml",
+    ) {}
 
     public get className() {
         return this.classList.toString();
@@ -93,6 +106,10 @@ export class TestElement {
 
     public setAttribute(name: string, value: string) {
         this.attributes.set(name, value);
+    }
+
+    public setAttributeNS(_namespaceURI: string | null, qualifiedName: string, value: string) {
+        this.setAttribute(qualifiedName, value);
     }
 
     public getAttribute(name: string) {
@@ -184,6 +201,14 @@ export class TestElement {
         this.scrolled = true;
     }
 
+    public focus() {
+        this.focused = true;
+    }
+
+    public getBoundingClientRect() {
+        return {bottom: 0, height: 0, left: 0, right: 0, top: 0, width: 0, x: 0, y: 0, toJSON() { return {}; }};
+    }
+
     private *descendants(): Generator<TestElement> {
         for (const child of this.children) {
             yield child;
@@ -195,6 +220,10 @@ export class TestElement {
 export class TestDocument {
     public createElement(tagName: string) {
         return new TestElement(this, tagName.toUpperCase());
+    }
+
+    public createElementNS(namespaceURI: string, qualifiedName: string) {
+        return new TestElement(this, qualifiedName.toUpperCase(), namespaceURI);
     }
 }
 

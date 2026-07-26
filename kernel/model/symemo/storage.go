@@ -529,6 +529,7 @@ func (c Config) scanElementsWithWalker(walkDir func(string, fs.WalkDirFunc) erro
 				hardenedMaterial.HTML = hardenedHTML
 				recordElement.Payload.Material = &hardenedMaterial
 			}
+			applyEffectiveElementAuthoringRevisions(&recordElement)
 			record := elementSourceRecord{
 				Element:        recordElement,
 				SourcePath:     sourcePath,

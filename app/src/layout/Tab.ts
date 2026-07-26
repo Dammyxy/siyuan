@@ -12,6 +12,8 @@ import {ipcRenderer} from "electron";
 /// #endif
 import {layoutToJSON, saveLayout} from "./util";
 import {setTitle} from "../util/processTitle";
+import {createTabTransferOffer, markTabTransferDragEnd} from "../symemo/hostTabTransfer";
+import {isModelTransitionGuarded, isWindowAuthoringBusy} from "../symemo/authoringRegistry";
 
 export class Tab {
     public parent: Wnd;
@@ -45,13 +47,27 @@ export class Tab {
             this.headElement.innerHTML = `${iconHTML}<span class="item__text">${escapeHtml(options.title)}</span>
 <span class="item__close"><svg><use xlink:href="#iconClose"></use></svg></span>`;
             this.headElement.addEventListener("dragstart", (event: DragEvent & { target: HTMLElement }) => {
+                if (isModelTransitionGuarded(this.model) && isWindowAuthoringBusy()) {
+                    event.preventDefault();
+                    return;
+                }
                 window.getSelection().removeAllRanges();
                 hideTooltip();
                 const tabElement = hasClosestByTag(event.target, "LI");
                 if (tabElement) {
-                    event.dataTransfer.setData("text/html", tabElement.outerHTML);
-                    const modeJSON = {id: this.id};
-                    layoutToJSON(this, modeJSON);
+                    let modeJSON: {id: string; symemoTransferOfferId?: string};
+                    if (isModelTransitionGuarded(this.model)) {
+                        const transferOfferId = createTabTransferOffer(this);
+                        if (!transferOfferId) {
+                            event.preventDefault();
+                            return;
+                        }
+                        modeJSON = {id: this.id, symemoTransferOfferId: transferOfferId};
+                    } else {
+                        event.dataTransfer.setData("text/html", tabElement.outerHTML);
+                        modeJSON = {id: this.id};
+                        layoutToJSON(this, modeJSON);
+                    }
                     event.dataTransfer.setData(Constants.SIYUAN_DROP_TAB, JSON.stringify(modeJSON));
                     event.dataTransfer.dropEffect = "move";
                     tabElement.style.opacity = "0.38";
@@ -84,6 +100,14 @@ export class Tab {
                 });
                 /// #endif
                 window.siyuan.dragElement = undefined;
+                try {
+                    const tabData = JSON.parse(event.dataTransfer.getData(Constants.SIYUAN_DROP_TAB) || "{}");
+                    if (tabData.symemoTransferOfferId) {
+                        markTabTransferDragEnd(tabData.symemoTransferOfferId);
+                    }
+                } catch (_) {
+                    // 忽略外部来源的异常拖拽数据。
+                }
                 if (event.dataTransfer.dropEffect === "none") {
                     // 按 esc 取消的时候应该还原在 dragover 时交换的 tab
                     this.parent.children.forEach((item, index) => {

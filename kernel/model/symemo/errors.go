@@ -36,10 +36,14 @@ const (
 	ErrQueueAdvanceFailed              ErrorCode = "queue-advance-failed"
 	ErrHistoryRequiresRepair           ErrorCode = "history-requires-repair"
 	ErrInvalidCreateCommand            ErrorCode = "invalid-create-command"
+	ErrInvalidChangeCommand            ErrorCode = "invalid-change-command"
+	ErrInvalidElementTitle             ErrorCode = "invalid-element-title"
+	ErrInvalidTopicHTML                ErrorCode = "invalid-topic-html"
 	ErrElementWritePartial             ErrorCode = "element-write-partial"
 	ErrElementNotFound                 ErrorCode = "element-not-found"
 	ErrElementSourceUnavailable        ErrorCode = "element-source-unavailable"
 	ErrElementSourceAmbiguous          ErrorCode = "element-source-ambiguous"
+	ErrElementRevisionConflict         ErrorCode = "element-revision-conflict"
 	ErrProjectionRebuildFailed         ErrorCode = "projection-rebuild-failed"
 )
 
@@ -52,6 +56,10 @@ type DomainError struct {
 	ElementID       string
 	EventID         string
 	AcceptedEventID string
+	ChangeAccepted  bool
+	ChangedField    ChangedElementField
+	CurrentRevision string
+	AcceptedChange  *ChangeElementResult
 	Session         *SessionState
 	Cause           error
 }

@@ -1,25 +1,27 @@
-# Topic Reader And HTML Editor Design
+# Topic HTML Surface And Editor Design
 
 Date: 2026-07-19
+Updated: 2026-07-25
 
 ## Decision
 
-SiYuanMemo will ship a dedicated Topic Reader with an editable HTML material surface. The MVP uses TinyMCE as the HTML editor Adapter for Topic material. Protyle remains the editor for user-authored SiYuan notes and is not used for Topic HTML.
+SiYuanMemo will ship one dedicated, always-editable HTML Topic surface. The MVP uses TinyMCE as the HTML editor Adapter for Topic material. There is no separate reading mode, editing mode, or mode switch. Protyle remains the editor for user-authored SiYuan notes and for live Block-backed Topic material; it is not used for HTML-backed Topic material.
 
 This is a Module and Adapter decision:
 
 - `TopicMaterial` is the deep Module that owns Topic HTML actions.
-- `TopicReader` is the reading surface Adapter.
+- `TopicHtmlSurface` is the frontend Surface hosted by `ContentSurfaceHost`.
 - `TopicHtmlEditorAdapter` wraps TinyMCE and converts editor events into Learning Engine actions.
 
 TinyMCE must not become the Learning Engine interface. If TinyMCE is replaced later, storage, scheduling, note references, and core Topic actions should remain unchanged.
 
 ## MVP Scope
 
-The Topic Reader MVP supports:
+The Topic HTML surface MVP supports:
 
-- opening a Topic and rendering cleaned HTML from its `.sme` payload;
-- reading mode with scroll position tracking;
+- creating a real, unbound top-level Topic immediately when the user invokes `+`, including a canonical empty title and empty HTML body;
+- opening a Topic and loading cleaned HTML from its `.sme` payload into TinyMCE;
+- scroll position tracking without persisting viewport position as Element authority;
 - setting, jumping to, clearing, and persisting a read point;
 - selecting a range and running `ExtractTopic`;
 - splitting material into child Topics;
@@ -34,7 +36,7 @@ The Topic Reader MVP supports:
 
 The MVP does not need a full browser, URL fetcher, PDF/EPUB reader, source snapshot archive, or Protyle-based material editor.
 
-Topic navigation and Element Browser views are specified separately in `docs/siyuanmemo/0005-topic-ui-integration-design.md`. The Topic Reader only owns the opened Topic surface; the left Topic tree and Element Browser are separate UI Adapters over the Learning Engine.
+Topic navigation and Element Browser views are specified separately in `docs/siyuanmemo/0005-topic-ui-integration-design.md`. `TopicHtmlSurface` only owns the opened Topic content surface; the left Topic tree and Element Browser are separate UI Adapters over the Learning Engine.
 
 ## Topic Reader Context Menu
 
@@ -64,7 +66,6 @@ MVP command groups:
 - `Find in article`: local search inside the current Topic HTML.
 - `Download images`: import remote images referenced by Topic HTML into the SiYuanMemo media store.
 - `File`: view source, edit source through TinyMCE/source adapter, copy stored file path or Element path, and open local media where applicable.
-- `Mode`: switch between read mode and edit mode; dragging/component layout modes are not part of the MVP because SiYuanMemo has one Topic HTML surface, not SuperMemo's multi-component layout.
 
 Reserved or remapped SuperMemo commands:
 
@@ -79,7 +80,7 @@ Reserved or remapped SuperMemo commands:
 Selection-sensitive defaults:
 
 - selected text enables extract, cloze, send to note, highlight, ignore, insert link, parse selected HTML, and set read point;
-- no selection still enables find in article, paste, go to read point, clear read point, download images, open source/origin, mode switch, and file/source operations;
+- no selection still enables find in article, paste, go to read point, clear read point, download images, open source/origin, and file/source operations;
 - right-clicking an existing Element link should add open, preview, copy Element link, and show backlinks actions.
 
 ## Deep Module Interface
@@ -103,26 +104,40 @@ Editing a Topic:
 
 ```text
 TopicHtmlEditorAdapter -> /api/symemo/saveTopicHtml -> ChangeElement(SaveTopicHTML)
+  -> validate expected material revision
   -> sanitize HTML
   -> normalize supported structure
   -> preserve/regenerate stable node IDs
   -> remap or invalidate affected annotations
   -> write the owning root .sme
-  -> append event
-  -> rebuild Topic index rows
+  -> refresh Topic projection without a scheduling event
+  -> return canonical HTML, material revision, and cleaning policy
 ```
 
-Adding a bound Topic:
+Renaming the opened Topic:
 
 ```text
-Element toolbar Add new -> /api/symemo/addNewTopic -> CreateElement(AddNewTopic)
-  -> create Topic in the selected/default storage location
-  -> add zero or one boundTo relation to the current Concept or Element
-  -> initialize an empty or starter Topic payload
-  -> resolve defaults from Topic override, boundTo Concept context, structural Concept, then collection defaults
-  -> schedule Topic due now
+SiYuan-style title input -> /api/symemo/renameElement -> ChangeElement(RenameElement)
+  -> validate expected title revision
+  -> normalize the title
+  -> preserve the latest Topic material
+  -> write the owning root .sme
+  -> refresh Topic projection without a scheduling event
+  -> return canonical title and title revision
+```
+
+Feature 006 Add new:
+
+```text
+Elements dock + -> /api/symemo/createHTMLTopic -> CreateElement(AddNewTopic)
+  -> create an unbound top-level Topic immediately
+  -> persist empty title and canonical empty HTML
+  -> resolve collection defaults
+  -> initialize its remembered Topic schedule
   -> append event
 ```
+
+A later contextual Product v1 creation path may add one primary `boundTo` relation; Feature 006 does not.
 
 Extracting a Topic:
 
@@ -171,15 +186,17 @@ TinyMCE may provide editing UI, toolbar behavior, paste handling, table editing,
 The adapter must:
 
 - load only sanitized Topic HTML;
+- represent authoritative empty HTML as an editable visual blank without persisting editor placeholder markup;
 - disable unsafe embed/script behavior;
 - call `SaveTopicHtml` instead of writing files;
 - route pasted or dropped images through the Learning Engine's SiYuan asset adapter instead of embedding base64 blobs or raw local paths;
 - preserve formula source in stable math nodes instead of saving only rendered HTML;
-- expose dirty state to the Topic Reader;
-- support cancel/reload without corrupting Element state;
+- expose pending-save, saving, failed, and revision-conflict state to `ContentSurfaceHost`;
+- support authoritative reload and conflict-safe save-as-new without corrupting Element state;
+- expose title and material as independent revisioned fields so unrelated title/body changes do not conflict or overwrite each other;
 - keep selection/extraction actions routed through the Learning Engine.
 
-The adapter should keep the toolbar modest for MVP: headings, bold/italic, links, lists, blockquote, table basics, image display/edit metadata, formula display/edit metadata, undo/redo, and save/cancel.
+The adapter should keep the toolbar modest for MVP: headings, bold/italic, links, lists, blockquote, table basics, image display/edit metadata, formula display/edit metadata, and undo/redo. Saving is automatic; the surface has no normal save/cancel buttons.
 
 ## Safety And Testing
 

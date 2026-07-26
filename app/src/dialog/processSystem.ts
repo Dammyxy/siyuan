@@ -1,5 +1,5 @@
 import {Constants} from "../constants";
-import {fetchPost} from "../util/fetch";
+import {fetchPost, fetchSyncPost} from "../util/fetch";
 /// #if !MOBILE
 import {exportLayout} from "../layout/util";
 import {getDockByType} from "../layout/tabUtil";
@@ -20,6 +20,11 @@ import {App} from "../index";
 import {saveScroll} from "../protyle/scroll/saveScroll";
 import {isInAndroid, isInHarmony, isInIOS, setStorageVal} from "../protyle/util/compatibility";
 import {Plugin} from "../plugin";
+import {
+    beginHostAuthoringTransition,
+    createHostTransitionIntentKey,
+    type HostAuthoringLease,
+} from "../symemo/hostAuthoringTransition";
 
 export const setRefDynamicText = (data: {
     "blockID": string,
@@ -149,22 +154,53 @@ export const forceQuit = () => {
     /// #endif
 };
 
-const installNewVersion = (installPkgPath: string, setCurrentWorkspace: boolean) => {
+const installNewVersion = async (installPkgPath: string, setCurrentWorkspace: boolean) => {
     if (!installPkgPath) {
         showMessage(window.siyuan.languages._kernel[104], 7000, "error");
         return;
     }
     /// #if !BROWSER
-    ipcRenderer.invoke(Constants.SIYUAN_INSTALL_UPDATE, {
+    const result = await beginHostAuthoringTransition({
+        kind: "update-install",
+        requester: "update-install",
+        requestId: `update:${Date.now()}`,
+    });
+    if (result.allowed === false) {
+        showMessage(window.siyuan.languages._kernel[104], 7000, "error");
+        return;
+    }
+    const lease = result;
+    const request = {
         port: location.port,
         setCurrentWorkspace,
-    }).then((accepted: boolean) => {
+        token: lease.token,
+    };
+    let preflight = false;
+    try {
+        preflight = Boolean(await ipcRenderer.invoke(Constants.SIYUAN_INSTALL_UPDATE, {
+            ...request,
+            phase: "preflight",
+        }));
+    } catch (_) {
+        // 可逆租约在下方取消。
+    }
+    if (!preflight) {
+        await lease.cancel();
+        showMessage(window.siyuan.languages._kernel[104], 7000, "error");
+        return;
+    }
+    await lease.commit();
+    try {
+        const accepted = await ipcRenderer.invoke(Constants.SIYUAN_INSTALL_UPDATE, {
+            ...request,
+            phase: "start",
+        });
         if (!accepted) {
             showMessage(window.siyuan.languages._kernel[104], 7000, "error");
         }
-    }).catch(() => {
+    } catch (_) {
         showMessage(window.siyuan.languages._kernel[104], 7000, "error");
-    });
+    }
     /// #else
     fetchPost("/api/system/exit", {
         force: true,
@@ -186,85 +222,178 @@ const installNewVersion = (installPkgPath: string, setCurrentWorkspace: boolean)
     /// #endif
 };
 
-export const exitSiYuan = async (setCurrentWorkspace = true) => {
+const commitAndQuit = async (lease?: HostAuthoringLease) => {
     hideAllElements(["util"]);
+    /// #if !BROWSER
+    await lease?.commit();
+    ipcRenderer.send(Constants.SIYUAN_QUIT, {port: location.port, token: lease?.token});
+    /// #else
+    void lease;
+    /// #endif
+};
+
+const forceExitSiYuan = async (setCurrentWorkspace: boolean, execInstallPkg?: number) => {
+    const result = await beginHostAuthoringTransition({
+        kind: "application-exit",
+        requester: "force-exit",
+        requestId: `force-exit:${Date.now()}`,
+    });
+    if (result.allowed === false) {
+        showMessage(window.siyuan.languages.saveFailed || result.reason);
+        return;
+    }
+    const response = await fetchSyncPost("/api/system/exit", {
+        force: true,
+        setCurrentWorkspace,
+        ...(execInstallPkg === undefined ? {} : {execInstallPkg}),
+    }).catch(async () => {
+        await result.cancel();
+        return undefined;
+    });
+    if (!response) {
+        return;
+    }
+    await commitAndQuit(result);
+};
+
+const exitSiYuanInternal = async (setCurrentWorkspace = true, existingLease?: HostAuthoringLease) => {
+    let lease = existingLease;
+    if (!lease) {
+        const result = await beginHostAuthoringTransition({
+            kind: "application-exit",
+            requester: "renderer",
+            requestId: `exit:${Date.now()}`,
+        });
+        if (result.allowed === false) {
+            showMessage(window.siyuan.languages.saveFailed || result.reason);
+            return;
+        }
+        lease = result;
+    }
     /// #if MOBILE
     if (window.siyuan.mobile.editor) {
         await saveScroll(window.siyuan.mobile.editor.protyle);
     }
     /// #endif
-    fetchPost("/api/system/exit", {force: false, setCurrentWorkspace}, (response) => {
-        if (response.code === 1) { // 同步执行失败
-            const msgId = showMessage(response.msg, response.data.closeTimeout, "error");
-            const buttonElement = document.querySelector(`#message [data-id="${msgId}"] button`);
-            if (buttonElement) {
-                buttonElement.addEventListener("click", () => {
-                    if (response.data.installPkgPath) {
-                        installNewVersion(response.data.installPkgPath, setCurrentWorkspace);
+    let response: IWebSocketData;
+    try {
+        response = await fetchSyncPost("/api/system/exit", {force: false, setCurrentWorkspace});
+    } catch (_) {
+        await lease.cancel();
+        return;
+    }
+    if (response.code === 1) { // 同步执行失败
+        await lease.cancel();
+        const msgId = showMessage(response.msg, response.data.closeTimeout, "error");
+        const buttonElement = document.querySelector(`#message [data-id="${msgId}"] button`);
+        if (buttonElement) {
+            buttonElement.addEventListener("click", () => {
+                if (response.data.installPkgPath) {
+                    void installNewVersion(response.data.installPkgPath, setCurrentWorkspace);
+                    return;
+                }
+                void forceExitSiYuan(setCurrentWorkspace).then(() => {
+                    /// #if BROWSER
+                    if (isInAndroid()) {
+                        window.JSAndroid.exit();
                         return;
                     }
-                    fetchPost("/api/system/exit", {force: true, setCurrentWorkspace}, () => {
-                        /// #if !BROWSER
-                        ipcRenderer.send(Constants.SIYUAN_QUIT, location.port);
-                        /// #else
-                        if (isInAndroid()) {
-                            window.JSAndroid.exit();
-                            return;
-                        }
-                        if (isInIOS()) {
-                            window.webkit.messageHandlers.exit.postMessage("");
-                            return;
-                        }
-                        if (isInHarmony()) {
-                            window.JSHarmony.exit();
-                            return;
-                        }
-                        /// #endif
-                    });
-                });
-            }
-        } else if (response.code === 2) { // 提示新安装包
-            hideMessage();
-
-            /// #if !BROWSER
-            if ("std" === window.siyuan.config.system.container) {
-                ipcRenderer.send(Constants.SIYUAN_SHOW_WINDOW);
-            }
-            /// #endif
-
-            confirmDialog(window.siyuan.languages.updateVersion, response.msg, () => {
-                installNewVersion(response.data.installPkgPath, setCurrentWorkspace);
-            }, () => {
-                fetchPost("/api/system/exit", {
-                    force: true,
-                    setCurrentWorkspace,
-                    execInstallPkg: 1 // 0：默认检查新版本，1：不返回安装包，2：返回安装包路径并退出
-                }, () => {
-                    /// #if !BROWSER
-                    ipcRenderer.send(Constants.SIYUAN_QUIT, location.port);
+                    if (isInIOS()) {
+                        window.webkit.messageHandlers.exit.postMessage("");
+                        return;
+                    }
+                    if (isInHarmony()) {
+                        window.JSHarmony.exit();
+                        return;
+                    }
                     /// #endif
                 });
             });
-        } else { // 正常退出
-            /// #if !BROWSER
-            ipcRenderer.send(Constants.SIYUAN_QUIT, location.port);
-            /// #else
-            if (isInAndroid()) {
-                window.JSAndroid.exit();
-                return;
-            }
-            if (isInIOS()) {
-                window.webkit.messageHandlers.exit.postMessage("");
-                return;
-            }
-
-            if (isInHarmony()) {
-                window.JSHarmony.exit();
-                return;
-            }
-            /// #endif
         }
+    } else if (response.code === 2) { // 提示新安装包
+        await lease.cancel();
+        hideMessage();
+
+        /// #if !BROWSER
+        if ("std" === window.siyuan.config.system.container) {
+            ipcRenderer.send(Constants.SIYUAN_SHOW_WINDOW);
+        }
+        /// #endif
+
+        confirmDialog(window.siyuan.languages.updateVersion, response.msg, () => {
+            void installNewVersion(response.data.installPkgPath, setCurrentWorkspace);
+        }, () => {
+            void forceExitSiYuan(setCurrentWorkspace, 1);
+        });
+    } else { // 正常退出
+        await commitAndQuit(lease);
+        /// #if BROWSER
+        if (isInAndroid()) {
+            window.JSAndroid.exit();
+            return;
+        }
+        if (isInIOS()) {
+            window.webkit.messageHandlers.exit.postMessage("");
+            return;
+        }
+
+        if (isInHarmony()) {
+            window.JSHarmony.exit();
+            return;
+        }
+        /// #endif
+    }
+};
+
+let normalExitPromise: Promise<void> | undefined;
+
+export const exitSiYuan = (setCurrentWorkspace = true, existingLease?: HostAuthoringLease): Promise<void> => {
+    if (existingLease) {
+        return exitSiYuanInternal(setCurrentWorkspace, existingLease);
+    }
+    if (normalExitPromise) {
+        return normalExitPromise;
+    }
+    normalExitPromise = exitSiYuanInternal(setCurrentWorkspace).finally(() => {
+        normalExitPromise = undefined;
     });
+    return normalExitPromise;
+};
+
+const workspaceReplacePromises = new Map<string, Promise<boolean>>();
+
+export const switchWorkspaceAndExit = (workspace: string): Promise<boolean> => {
+    const key = createHostTransitionIntentKey({kind: "workspace-replace", target: workspace, requester: "workspace-switch"});
+    const existing = workspaceReplacePromises.get(key);
+    if (existing) {
+        return existing;
+    }
+    const promise = (async () => {
+        const lease = await beginHostAuthoringTransition({
+            kind: "workspace-replace",
+            target: workspace,
+            requester: "workspace-switch",
+            requestId: `workspace-replace:${Date.now()}`,
+        });
+        if (lease.allowed === false) {
+            showMessage(window.siyuan.languages.saveFailed || lease.reason);
+            return false;
+        }
+        try {
+            const response = await fetchSyncPost("/api/system/setWorkspaceDir", {path: workspace});
+            if (response.code !== 0) {
+                await lease.cancel();
+                return false;
+            }
+        } catch (_) {
+            await lease.cancel();
+            return false;
+        }
+        await exitSiYuan(false, lease);
+        return true;
+    })().finally(() => workspaceReplacePromises.delete(key));
+    workspaceReplacePromises.set(key, promise);
+    return promise;
 };
 
 export const transactionError = (msg?: string) => {
@@ -288,14 +417,7 @@ export const transactionError = (msg?: string) => {
     dialog.element.setAttribute("data-key", Constants.DIALOG_STATEEXCEPTED);
     const btnsElement = dialog.element.querySelectorAll(".b3-button");
     btnsElement[0].addEventListener("click", () => {
-        /// #if MOBILE
-        exitSiYuan();
-        /// #else
-        exportLayout({
-            errorExit: true,
-            cb: exitSiYuan
-        });
-        /// #endif
+        void exitSiYuan();
     });
     btnsElement[1].addEventListener("click", () => {
         refreshFileTree();
