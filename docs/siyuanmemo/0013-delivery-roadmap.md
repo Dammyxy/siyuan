@@ -1,6 +1,6 @@
 # SiYuanMemo Delivery Roadmap
 
-Date: 2026-07-26
+Date: 2026-07-31
 
 ## Decision And Authority
 
@@ -25,7 +25,7 @@ Dogfood Alpha is a delivery checkpoint, not a replacement product architecture. 
 
 ## Current Delivery Sequence
 
-| Feature | Milestone | Minimum user-visible gate | Status on 2026-07-26 |
+| Feature | Milestone | Minimum user-visible gate | Status on 2026-07-31 |
 |---|---|---|---|
 | 001 | Item Learning Core | A prepared Item can complete a durable Start, Show Answer, and Grade loop through the backend. | Complete |
 | 002 | Element Storage And Read-Only Tree | Authoritative dual-tree Elements and scheduling history can be read, rebuilt, and recovered without making the disposable index authoritative. | Complete |
@@ -33,11 +33,11 @@ Dogfood Alpha is a delivery checkpoint, not a replacement product architecture. 
 | 004 | Create HTML Topic Tracer | A caller can create a safe HTML-backed Topic through the versioned cleaning and storage path. | Complete |
 | 005 | Native Read Alpha | A learner can activate the native Elements dock, navigate the complete Engine-provided tree, and read a supported HTML Topic in a native Element tab. | Complete |
 | 006 | Capture/Edit Alpha | A learner can immediately create an empty HTML Topic, edit it in the real Topic editor, automatically save it, and use normal paste, paste as plain text, and paste as HTML from the editor component context menu. | Complete |
-| 007 | Topic Learning Alpha | A learner can start a real Topic learning session in the native UI and advance Topics with `Next`, with accepted scheduling truth surviving restart through the existing Engine. | Planned next |
-| 008 | Item Alpha | A learner can create a basic manual Q/A Item and complete its prompt, Show Answer, and raw grade `0..5` review in the native UI. | Planned |
+| 007 | Topic Learning Alpha | A learner can start a real Topic learning session in the native UI and advance Topics with `Next`, with accepted scheduling truth surviving restart through the existing Engine. | Implementation complete; source-bound desktop acceptance pending |
+| 008 | Item Alpha | A learner can create a basic manual Q/A Item and complete its prompt, Show Answer, and raw grade `0..5` review in the native UI. | Next: specification |
 | 009 | Native Asset Intake | A learner can paste a screenshot, drop an image, or choose a local image in an HTML Topic and retain it as a SiYuan-managed `assets/...` reference that native unused-asset cleanup does not misclassify. | Planned |
 
-The Feature 005 specification and task set remain unchanged by this roadmap. Feature 006 is complete. Feature 007 begins next as the Dogfood Alpha usability gate for Topic learning and must not wait for the complete Product v1 surface. Feature 008 closes the first mixed Topic-and-Item learning loop. Feature 009 is the first post-Alpha dependency and adds only the shared-asset behavior required for safe local image capture.
+The Feature 005 specification and task set remain unchanged by this roadmap. Features 005 and 006 are complete. Feature 007 implementation, automated verification, and independent review are complete, while its source-bound real-desktop acceptance matrix remains the only open gate. Feature 008 specification may proceed without expanding Feature 007, but Dogfood Alpha is not declared complete until both the Feature 007 desktop gate and the Feature 008 Item workflow pass. Feature 009 is the first post-Alpha dependency and adds only the shared-asset behavior required for safe local image capture.
 
 ## Hard Scope Gates
 
@@ -55,7 +55,7 @@ Feature 007 connects the existing Learning Session and Topic Scheduler path to t
 
 ### Feature 008: Item Alpha
 
-Feature 008 adds the smallest complete Item loop: basic manual Q/A creation, prompt rendering, answer reveal, and grades `0..5` through the existing Item scheduling path. Rich Item forms, advanced creation tools, Browser workflows, and broad lifecycle controls remain Product v1 work unless a separate validated dependency requires a smaller slice.
+Feature 008 adds the smallest complete Item loop: basic manual Q/A creation, prompt rendering, answer reveal, and grades `0..5` through the existing Item scheduling path. It continues the confirmed storage model rather than copying SiYuan's document AST: one stable Element envelope owns a versioned type-specific Q/A payload in `.sme`, while accepted grades remain immutable `.smr` authority and disposable session/projection state remains outside `.sme`. The Item content Surface and learning controls meet through stable interfaces so later editors can be replaced without changing scheduling or storage semantics. Rich Item forms, advanced creation tools, Browser workflows, block conversion, extraction, and broad lifecycle controls remain Product v1 work unless a separate validated dependency requires a smaller slice.
 
 ### Feature 009: Native Asset Intake
 
