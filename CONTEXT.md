@@ -82,6 +82,14 @@ _Avoid_: Current target, reviewed Element
 An accepted schedule-changing processing of an Element through its target-native learning action.
 _Avoid_: Navigation, drill
 
+**Grade**:
+The formal `0..5` assessment accepted for an Item Repetition. It updates the active learning schedule and may separately admit the Item to Final Drill.
+_Avoid_: Again command, Drill Grade
+
+**Drill Grade**:
+A schedule-neutral `0..5` assessment inside Final Drill that only determines whether the Item remains in or exits the drill.
+_Avoid_: Repetition, Grade
+
 **Mid-interval Repetition**:
 A deliberate Repetition performed before a Memorized Element becomes Outstanding.
 _Avoid_: Preview, drill
@@ -89,6 +97,10 @@ _Avoid_: Preview, drill
 **Final Drill**:
 Schedule-neutral repeated practice of Items admitted after a grade below Good until they receive Good or better.
 _Avoid_: Repetition queue, retrieval-practice queue
+
+**Relearning**:
+A deferred optional practice policy in which a failed Item enters short-delay, schedule-coupled steps before returning to ordinary review. It is distinct from Final Drill and is not the default SiYuanMemo learning flow.
+_Avoid_: Final Drill, FSRS Again
 
 **Subset Learning**:
 Learning over an explicitly selected ordered set of Elements while preserving global lifecycle and scheduling semantics.

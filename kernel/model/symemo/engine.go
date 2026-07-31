@@ -79,6 +79,9 @@ func (engine *Engine) CreateElement(ctx context.Context, command CreateElementCo
 	if engine.unavailable.Load() {
 		return CreateElementResult{}, projectionRebuildFailedError()
 	}
+	if err := validateCreateElementCommandVariant(command); err != nil {
+		return CreateElementResult{}, err
+	}
 	switch command.Kind {
 	case CreateElementAddNewTopic:
 		if engine.config.ReadOnly {
@@ -93,6 +96,16 @@ func (engine *Engine) CreateElement(ctx context.Context, command CreateElementCo
 			return CreateElementResult{}, projectionRebuildFailedError()
 		}
 		return engine.createHTMLTopic(ctx, command.AddNewTopic)
+	case CreateElementCreateItem:
+		if engine.config.ReadOnly {
+			return CreateElementResult{}, domainError(ErrUnsupportedOperation, "Element creation is unavailable in read-only mode", nil)
+		}
+		engine.schedulingWriteMu.Lock()
+		defer engine.schedulingWriteMu.Unlock()
+		if engine.unavailable.Load() {
+			return CreateElementResult{}, projectionRebuildFailedError()
+		}
+		return engine.createItem(ctx, command.CreateItem)
 	default:
 		return CreateElementResult{}, domainError(ErrUnsupportedOperation, "unsupported CreateElement variant", nil)
 	}
@@ -101,6 +114,9 @@ func (engine *Engine) CreateElement(ctx context.Context, command CreateElementCo
 func (engine *Engine) ChangeElement(ctx context.Context, command ChangeElementCommand) (ChangeElementResult, error) {
 	if engine.unavailable.Load() {
 		return ChangeElementResult{}, projectionRebuildFailedError()
+	}
+	if err := validateChangeElementCommandVariant(command); err != nil {
+		return ChangeElementResult{}, err
 	}
 	if engine.config.ReadOnly {
 		return ChangeElementResult{}, changeElementDomainError(ErrUnsupportedOperation, "Element changes are unavailable in read-only mode", "", changedFieldForCommand(command), false, false, nil)
@@ -184,6 +200,9 @@ func (engine *Engine) Query(ctx context.Context, query Query) (QueryResult, erro
 		if err != nil {
 			return QueryResult{}, err
 		}
+		if element.Type == "item" && element.Payload.Kind == "qa" {
+			element.Payload.Answer = ""
+		}
 		nodes, err := engine.index.tree()
 		if err != nil {
 			return QueryResult{}, err
@@ -204,6 +223,23 @@ func (engine *Engine) Query(ctx context.Context, query Query) (QueryResult, erro
 			return QueryResult{}, err
 		}
 		return QueryResult{Element: &view}, nil
+	case QueryItemAuthoring:
+		if query.ElementID == "" || query.Subset != "" || query.RootElementID != "" || query.SourcePath != "" || query.IncludeScheduleSummary {
+			return QueryResult{}, domainError(ErrUnsupportedOperation, "GetItemAuthoring query shape is invalid", nil)
+		}
+		element, err := engine.index.element(query.ElementID)
+		if errors.Is(err, errProjectionNotFound) {
+			return QueryResult{}, domainError(ErrElementNotFound, "Element was not found", nil)
+		}
+		if err != nil {
+			return QueryResult{}, err
+		}
+		if element.Type != "item" || element.Payload.Kind != "qa" {
+			return QueryResult{}, domainError(ErrUnsupportedOperation, "Element is not a supported Q/A Item", nil)
+		}
+		return QueryResult{ItemAuthoring: &ItemAuthoringView{
+			ElementID: element.ID, Prompt: element.Payload.Prompt, Answer: element.Payload.Answer, ContentRevision: element.Payload.Revision,
+		}}, nil
 	case QueryElementSourceDiagnostics:
 		diagnostics, err := engine.index.sourceDiagnostics()
 		if err != nil {
@@ -213,6 +249,41 @@ func (engine *Engine) Query(ctx context.Context, query Query) (QueryResult, erro
 	default:
 		return QueryResult{}, domainError(ErrUnsupportedOperation, "unsupported Query variant", nil)
 	}
+}
+
+func validateCreateElementCommandVariant(command CreateElementCommand) error {
+	hasTopic := command.AddNewTopic != (AddNewTopicCommand{})
+	hasItem := command.CreateItem != (CreateItemCommand{})
+	switch command.Kind {
+	case CreateElementAddNewTopic:
+		if hasItem {
+			return domainError(ErrInvalidCreateCommand, "CreateElement command shape is invalid", nil)
+		}
+	case CreateElementCreateItem:
+		if hasTopic || !hasItem {
+			return domainError(ErrInvalidCreateCommand, "CreateElement command shape is invalid", nil)
+		}
+	}
+	return nil
+}
+
+func validateChangeElementCommandVariant(command ChangeElementCommand) error {
+	hasRename := command.RenameElement != (RenameElementCommand{})
+	hasTopicHTML := command.SaveTopicHTML != (SaveTopicHTMLCommand{})
+	hasItemQA := command.SaveItemQA != (SaveItemQACommand{})
+	invalid := false
+	switch command.Kind {
+	case ChangeElementRenameElement:
+		invalid = hasTopicHTML || hasItemQA
+	case ChangeElementSaveTopicHTML:
+		invalid = hasRename || hasItemQA
+	case ChangeElementSaveItemQA:
+		invalid = hasRename || hasTopicHTML || !hasItemQA
+	}
+	if invalid {
+		return changeElementDomainError(ErrInvalidChangeCommand, "ChangeElement command shape is invalid", "", changedFieldForCommand(command), false, false, nil)
+	}
+	return nil
 }
 
 func (engine *Engine) RunLearningAction(ctx context.Context, action LearningAction) (LearningResult, error) {
@@ -229,7 +300,7 @@ func (engine *Engine) RunLearningAction(ctx context.Context, action LearningActi
 	if engine.unavailable.Load() {
 		return LearningResult{}, projectionRebuildFailedError()
 	}
-	if engine.config.ReadOnly && isSchedulingChangingAction(action.Kind) {
+	if engine.config.ReadOnly && isReadOnlyRejectedAction(action.Kind) {
 		return LearningResult{}, domainError(ErrUnsupportedOperation, "scheduling changes are unavailable in read-only mode", nil)
 	}
 	switch action.Kind {
@@ -301,6 +372,10 @@ func projectionRebuildFailedError() error {
 
 func isSchedulingChangingAction(kind LearningActionKind) bool {
 	return kind == ActionGradeItem || kind == ActionNextTopic || kind == ActionGradeDrill
+}
+
+func isReadOnlyRejectedAction(kind LearningActionKind) bool {
+	return isSchedulingChangingAction(kind) || kind == ActionShowAnswer || kind == ActionAcceptStageTransition
 }
 
 func (engine *Engine) refreshProjection(ctx context.Context) error {

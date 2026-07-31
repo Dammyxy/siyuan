@@ -174,7 +174,7 @@ describe("TopicLearningCoordinator US1", () => {
             status: "active",
             stage: "outstanding",
             phase: "answer",
-            current: {kind: "element.item", elementId: "item-007"},
+            current: {kind: "element.item", elementId: "item-007", prompt: "Question", answer: "Answer"},
             remainingElementIds: [],
         })});
         await unsupported.coordinator.initialized;

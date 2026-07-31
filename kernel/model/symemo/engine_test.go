@@ -187,9 +187,6 @@ func TestReadOnlyEngineRejectsGradeBeforeStateMutation(t *testing.T) {
 	if _, err = engine.RunLearningAction(t.Context(), LearningAction{Kind: ActionStart}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = engine.RunLearningAction(t.Context(), LearningAction{Kind: ActionShowAnswer, ElementID: fixtureElementID}); err != nil {
-		t.Fatal(err)
-	}
 	reviewPath := filepath.Join(config.ReviewsRoot(), "2026-07.smr")
 	beforeEvents, err := os.ReadFile(reviewPath)
 	if err != nil {
@@ -229,6 +226,56 @@ func TestReadOnlyEngineRejectsGradeBeforeStateMutation(t *testing.T) {
 	if !reflect.DeepEqual(afterProjection, beforeProjection) {
 		t.Fatalf("read-only grade mutated projection\nbefore=%#v\nafter=%#v", beforeProjection, afterProjection)
 	}
+}
+
+func TestReadOnlyEngineRejectsAnswerRevealAndPendingAcceptBeforeMutation(t *testing.T) {
+	t.Run("show answer", func(t *testing.T) {
+		config := copyFixtureWorkspace(t)
+		config.ReadOnly = true
+		engine, err := NewEngine(t.Context(), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = engine.Close() })
+		started, err := engine.RunLearningAction(t.Context(), LearningAction{Kind: ActionStart})
+		if err != nil || started.Session == nil || started.Session.Current == nil {
+			t.Fatalf("start = %#v, err=%v", started, err)
+		}
+		before := engine.session.Current()
+		if _, err = engine.RunLearningAction(t.Context(), LearningAction{Kind: ActionShowAnswer, ElementID: before.Current.ElementID}); !hasCode(err, ErrUnsupportedOperation) {
+			t.Fatalf("read-only Show Answer error = %v", err)
+		}
+		if after := engine.session.Current(); !reflect.DeepEqual(after, before) {
+			t.Fatalf("read-only Show Answer mutated session\nbefore=%#v\nafter=%#v", before, after)
+		}
+	})
+
+	t.Run("accept pending", func(t *testing.T) {
+		config := copyFixtureWorkspace(t)
+		installDailyLearningConfig(t, config, "Asia/Shanghai", 4)
+		reviewPath := filepath.Join(config.ReviewsRoot(), "2026-07.smr")
+		file := readEventFile(t, reviewPath)
+		moveLegacyItemIntroductionDue(t, &file.Events[0], time.Date(2026, time.July, 30, 8, 0, 0, 0, config.Location))
+		writeTestJSON(t, reviewPath, file)
+		addRootElement(t, config, pendingItemElement("20260731170000-readonl", "Read-only pending Item"))
+		config.ReadOnly = true
+		engine, err := NewEngine(t.Context(), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = engine.Close() })
+		started, err := engine.RunLearningAction(t.Context(), LearningAction{Kind: ActionStart})
+		if err != nil || started.Session == nil || started.Session.Confirmation == nil || started.Session.Confirmation.Stage != StagePending {
+			t.Fatalf("start Pending = %#v, err=%v", started, err)
+		}
+		before := engine.session.Current()
+		if _, err = engine.RunLearningAction(t.Context(), LearningAction{Kind: ActionAcceptStageTransition, Stage: StagePending}); !hasCode(err, ErrUnsupportedOperation) {
+			t.Fatalf("read-only Pending accept error = %v", err)
+		}
+		if after := engine.session.Current(); !reflect.DeepEqual(after, before) {
+			t.Fatalf("read-only Pending accept mutated session\nbefore=%#v\nafter=%#v", before, after)
+		}
+	})
 }
 
 func TestShowAnswerAndGradeErrors(t *testing.T) {

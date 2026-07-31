@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -148,7 +149,7 @@ func TestElementQueryReturnsKnownAndOpaqueFutureElements(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if known.Element == nil || known.Element.ID != fixtureElementID || known.Element.SupportStatus != SupportStatusSupported || known.Element.SourcePath != fixtureElementID+".sme" || known.Element.Payload.Prompt == "" || known.Element.Payload.Answer == "" || known.Element.ScheduleProjection == nil {
+	if known.Element == nil || known.Element.ID != fixtureElementID || known.Element.SupportStatus != SupportStatusSupported || known.Element.SourcePath != fixtureElementID+".sme" || known.Element.Payload.Prompt == "" || known.Element.Payload.Answer != "" || known.Element.ScheduleProjection == nil {
 		t.Fatalf("known Element result = %#v", known.Element)
 	}
 
@@ -409,4 +410,53 @@ func treeContainsScheduleSummary(node ElementTreeNode) bool {
 		}
 	}
 	return false
+}
+
+func TestItemAuthoringQueryExplicitlyDisclosesFullPairWhileGenericDetailRedactsAnswer(t *testing.T) {
+	engine, _, item := newItemAuthorityEngine(t, supportedTestItem("20260731170000-query01", "Question\n第二行", "Private answer\n第二行", "rev-v1-query"))
+
+	authoring, err := engine.Query(t.Context(), Query{Kind: QueryItemAuthoring, ElementID: item.ID})
+	if err != nil || authoring.ItemAuthoring == nil {
+		t.Fatalf("authoring result=%#v err=%v", authoring, err)
+	}
+	if authoring.ItemAuthoring.ElementID != item.ID || authoring.ItemAuthoring.Prompt != item.Payload.Prompt || authoring.ItemAuthoring.Answer != item.Payload.Answer || authoring.ItemAuthoring.ContentRevision != item.Payload.Revision {
+		t.Fatalf("authoring view = %#v", authoring.ItemAuthoring)
+	}
+
+	detail, err := engine.Query(t.Context(), Query{Kind: QueryElement, ElementID: item.ID})
+	if err != nil || detail.Element == nil {
+		t.Fatalf("detail result=%#v err=%v", detail, err)
+	}
+	if detail.Element.Payload.Answer != "" || detail.Element.Payload.Prompt != item.Payload.Prompt || detail.Element.Payload.Revision != item.Payload.Revision {
+		t.Fatalf("generic Item payload = %#v", detail.Element.Payload)
+	}
+	serialized, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(serialized), item.Payload.Answer) || strings.Contains(string(serialized), `"answer"`) {
+		t.Fatalf("generic Item detail leaked answer: %s", serialized)
+	}
+}
+
+func TestItemAuthoringQueryUsesDeterministicLegacyRevisionWithoutWriting(t *testing.T) {
+	item := supportedTestItem("20260731170100-legacy1", "Legacy prompt", "Legacy answer", "")
+	engine, config, _ := newItemAuthorityEngine(t, item)
+	path := filepath.Join(config.ElementsRoot(), item.ID+".sme")
+	before := readOptionalFile(t, path)
+
+	first, err := engine.Query(t.Context(), Query{Kind: QueryItemAuthoring, ElementID: item.ID})
+	if err != nil || first.ItemAuthoring == nil {
+		t.Fatalf("first legacy query=%#v err=%v", first, err)
+	}
+	second, err := engine.Query(t.Context(), Query{Kind: QueryItemAuthoring, ElementID: item.ID})
+	if err != nil || second.ItemAuthoring == nil {
+		t.Fatalf("second legacy query=%#v err=%v", second, err)
+	}
+	if !strings.HasPrefix(first.ItemAuthoring.ContentRevision, "legacy-v1-") || first.ItemAuthoring.ContentRevision != second.ItemAuthoring.ContentRevision {
+		t.Fatalf("legacy revisions first=%q second=%q", first.ItemAuthoring.ContentRevision, second.ItemAuthoring.ContentRevision)
+	}
+	if after := readOptionalFile(t, path); string(after) != string(before) {
+		t.Fatalf("legacy query wrote authority\nbefore=%s\nafter=%s", before, after)
+	}
 }

@@ -106,3 +106,39 @@ func TestChangeElementConcurrentSameFieldAllowsOneWinner(t *testing.T) {
 		t.Fatalf("successes=%d conflicts=%d", successes, conflicts)
 	}
 }
+
+func TestSaveItemQAConcurrentDifferentPairsAllowOneAggregateWinner(t *testing.T) {
+	engine, _, item := newItemAuthorityEngine(t, supportedTestItem("20260731161000-qaconcr", "Original prompt", "Original answer", "rev-v1-original"))
+
+	errs := make(chan error, 2)
+	results := make(chan ChangeElementResult, 2)
+	for _, pair := range [][2]string{{"First prompt", "First answer"}, {"Second prompt", "Second answer"}} {
+		pair := pair
+		go func() {
+			result, err := engine.ChangeElement(t.Context(), ChangeElementCommand{Kind: ChangeElementSaveItemQA, SaveItemQA: SaveItemQACommand{
+				ElementID: item.ID, ExpectedContentRevision: item.Payload.Revision, Prompt: pair[0], Answer: pair[1],
+			}})
+			results <- result
+			errs <- err
+		}()
+	}
+	var successes, conflicts int
+	for i := 0; i < 2; i++ {
+		result, err := <-results, <-errs
+		if err == nil {
+			if !result.ChangeAccepted || !result.Changed || result.ItemQA == nil {
+				t.Fatalf("successful result = %#v", result)
+			}
+			successes++
+			continue
+		}
+		if hasCode(err, ErrElementRevisionConflict) {
+			conflicts++
+			continue
+		}
+		t.Fatalf("unexpected concurrent result=%#v err=%v", result, err)
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("successes=%d conflicts=%d", successes, conflicts)
+	}
+}

@@ -1,7 +1,9 @@
 import {fetchSyncPost} from "../util/fetch";
 import {
+    AcceptedItemQAChange,
     AcceptedElementChange,
     CreateHTMLTopicResult,
+    CreateItemResult,
     ElementAuthoringField,
     ElementChangeFailure,
     ElementChangeResult,
@@ -15,6 +17,9 @@ import {
     SessionCallResult,
     TopicNextCallResult,
     ElementTreeResult,
+    ItemAuthoringResult,
+    ItemGradeCallResult,
+    ItemQAChangeResult,
     TopicMaterialView,
 } from "./types";
 import {decodeElementTreeData} from "./treeState";
@@ -22,12 +27,19 @@ import {decodeElementTreeData} from "./treeState";
 const TREE_ENDPOINT = "/api/symemo/getElementTree";
 const DETAIL_ENDPOINT = "/api/symemo/getElement";
 const CREATE_ENDPOINT = "/api/symemo/createHTMLTopic";
+const CREATE_ITEM_ENDPOINT = "/api/symemo/createItem";
+const ITEM_AUTHORING_ENDPOINT = "/api/symemo/getItemAuthoring";
 const RENAME_ENDPOINT = "/api/symemo/renameElement";
+const SAVE_ITEM_QA_ENDPOINT = "/api/symemo/saveItemQA";
 const SAVE_TOPIC_HTML_ENDPOINT = "/api/symemo/saveTopicHTML";
 const CURRENT_LEARNING_ENDPOINT = "/api/symemo/getCurrentLearningSession";
 const START_LEARNING_ENDPOINT = "/api/symemo/startLearning";
 const STOP_LEARNING_ENDPOINT = "/api/symemo/stopLearning";
 const NEXT_TOPIC_ENDPOINT = "/api/symemo/nextTopic";
+const SHOW_ANSWER_ENDPOINT = "/api/symemo/showAnswer";
+const GRADE_ITEM_ENDPOINT = "/api/symemo/gradeItem";
+const ACCEPT_STAGE_ENDPOINT = "/api/symemo/acceptLearningStage";
+const DECLINE_STAGE_ENDPOINT = "/api/symemo/declineLearningStage";
 const TOPIC_HTML_CLEANING_POLICY = "siyuanmemo-topic-html-v1";
 
 type UnknownRecord = Record<string, unknown>;
@@ -100,6 +112,18 @@ const decodeDetailData = (value: unknown): ElementDetailView | undefined => {
         if (topicMaterial) {
             detail.topicMaterial = topicMaterial;
         }
+    } else if (value.type === "item") {
+        if (value.payloadSpec !== 1 || !isRecord(value.payload) || value.payload.kind !== "qa" ||
+            typeof value.payload.prompt !== "string" || value.payload.prompt.trim().length === 0 ||
+            typeof value.payload.revision !== "string" || value.payload.revision.trim().length === 0 ||
+            hasOwn(value.payload, "answer")) {
+            return undefined;
+        }
+        detail.item = {
+            kind: "qa",
+            prompt: value.payload.prompt,
+            revision: value.payload.revision,
+        };
     }
     if (isSupportedWritableHTMLTopic(detail) &&
         (!detail.titleRevision || !detail.topicMaterial?.revision)) {
@@ -194,10 +218,26 @@ const decodeLearningSession = (value: unknown): LearningSessionProjection | unde
         if (!isRecord(value.current) || !hasString(value.current, "kind") || !hasString(value.current, "elementId")) {
             return undefined;
         }
-        current = {
-            kind: getString(value.current, "kind"),
-            elementId: getString(value.current, "elementId"),
-        };
+        if (value.current.kind === "element.topic") {
+            current = {kind: "element.topic", elementId: getString(value.current, "elementId")};
+        } else if (value.current.kind === "element.item" && typeof value.current.prompt === "string" &&
+            value.current.prompt.trim().length > 0) {
+            const hasAnswer = hasOwn(value.current, "answer");
+            if ((value.phase === "question" && hasAnswer) ||
+                (value.phase === "answer" && (!hasAnswer || typeof value.current.answer !== "string" ||
+                    value.current.answer.trim().length === 0)) ||
+                (value.phase !== "question" && value.phase !== "answer")) {
+                return undefined;
+            }
+            current = {
+                kind: "element.item",
+                elementId: getString(value.current, "elementId"),
+                prompt: value.current.prompt,
+            };
+            if (value.phase === "answer") current.answer = value.current.answer as string;
+        } else {
+            return undefined;
+        }
     }
 
     const session: LearningSessionProjection = {
@@ -210,6 +250,16 @@ const decodeLearningSession = (value: unknown): LearningSessionProjection | unde
     if (current) session.current = current;
     if (hasString(value, "pendingAcceptedEventId")) {
         session.pendingAcceptedEventId = getString(value, "pendingAcceptedEventId");
+    }
+    if (hasOwn(value, "confirmation")) {
+        if (!isRecord(value.confirmation) ||
+            (value.confirmation.stage !== "pending" && value.confirmation.stage !== "finalDrill") ||
+            value.phase !== "confirmation" || value.stage !== value.confirmation.stage || current) {
+            return undefined;
+        }
+        session.confirmation = {stage: value.confirmation.stage};
+    } else if (value.phase === "confirmation") {
+        return undefined;
     }
     return session;
 };
@@ -258,6 +308,92 @@ export const startLearning = (): Promise<SessionCallResult> =>
 
 export const stopLearning = (): Promise<SessionCallResult> =>
     callLearningSession(STOP_LEARNING_ENDPOINT);
+
+const callLearningSessionAction = async (endpoint: string, request: UnknownRecord): Promise<SessionCallResult> => {
+    let envelope: unknown;
+    try {
+        envelope = await fetchSyncPost(endpoint, request);
+    } catch (error) {
+        return sessionTransportFailure(failureKind(error));
+    }
+    if (!hasEnvelopeShape(envelope)) return sessionTransportFailure("response");
+    if (envelope.code !== 0) return {ok: false, failure: decodeSessionFailure(envelope)};
+    const session = decodeLearningSession(envelope.data);
+    return session ? {ok: true, session} : sessionTransportFailure("response");
+};
+
+export const showAnswer = (elementId: string): Promise<SessionCallResult> => {
+    if (!hasString({elementId}, "elementId")) return Promise.resolve(sessionTransportFailure("response"));
+    return callLearningSessionAction(SHOW_ANSWER_ENDPOINT, {elementId});
+};
+
+const validStage = (stage: unknown): stage is "pending" | "finalDrill" =>
+    stage === "pending" || stage === "finalDrill";
+
+export const acceptLearningStage = (stage: "pending" | "finalDrill"): Promise<SessionCallResult> =>
+    validStage(stage)
+        ? callLearningSessionAction(ACCEPT_STAGE_ENDPOINT, {stage})
+        : Promise.resolve(sessionTransportFailure("response"));
+
+export const declineLearningStage = (stage: "pending" | "finalDrill"): Promise<SessionCallResult> =>
+    validStage(stage)
+        ? callLearningSessionAction(DECLINE_STAGE_ENDPOINT, {stage})
+        : Promise.resolve(sessionTransportFailure("response"));
+
+const gradeTransportFailure = (kind: "request" | "response"): ItemGradeCallResult => ({
+    ok: false,
+    failure: {errorCode: kind, retryable: true, acceptance: "unknown", kind},
+});
+
+const decodeFormalReviewFailure = (
+    envelope: UnknownRecord & {code: number; msg: string; data: unknown},
+    submittedEventId: string,
+): ItemGradeCallResult => {
+    if (!isRecord(envelope.data)) {
+        return {ok: false, failure: {errorCode: "host-rejected", retryable: false, acceptance: "unknown", kind: "domain"}};
+    }
+    const data = envelope.data;
+    const acceptedEventId = hasString(data, "acceptedEventId") ? getString(data, "acceptedEventId") : undefined;
+    const acceptedIdentityMatches = data.reviewAccepted === true && acceptedEventId === submittedEventId;
+    const failure: Extract<ItemGradeCallResult, {ok: false}>["failure"] = {
+        errorCode: hasString(data, "errorCode") ? getString(data, "errorCode") : "host-rejected",
+        retryable: typeof data.retryable === "boolean" ? data.retryable : false,
+        acceptance: acceptedIdentityMatches ? "accepted" : data.reviewAccepted === false ? "notAccepted" : "unknown",
+        kind: "domain",
+    };
+    if (acceptedIdentityMatches) failure.acceptedEventId = acceptedEventId;
+    const session = decodeLearningSession(data.session);
+    if (session) failure.session = session;
+    return {ok: false, failure};
+};
+
+export const gradeItem = async (
+    elementId: string,
+    eventId: string,
+    rawGrade: 0 | 1 | 2 | 3 | 4 | 5,
+): Promise<ItemGradeCallResult> => {
+    if (!hasString({elementId}, "elementId") || !hasString({eventId}, "eventId") ||
+        !Number.isInteger(rawGrade) || rawGrade < 0 || rawGrade > 5) {
+        return gradeTransportFailure("response");
+    }
+    let envelope: unknown;
+    try {
+        envelope = await fetchSyncPost(GRADE_ITEM_ENDPOINT, {elementId, rawGrade, eventId});
+    } catch (error) {
+        return gradeTransportFailure(failureKind(error));
+    }
+    if (!hasEnvelopeShape(envelope)) return gradeTransportFailure("response");
+    if (envelope.code !== 0) return decodeFormalReviewFailure(envelope, eventId);
+    const data = envelope.data;
+    if (!isRecord(data) || data.reviewAccepted !== true || data.eventId !== eventId || data.rawGrade !== rawGrade ||
+        data.passed !== (rawGrade >= 3) || data.ratingMapping !== "supermemo-grade-v1") {
+        return gradeTransportFailure("response");
+    }
+    const session = decodeLearningSession(data.session);
+    return session
+        ? {ok: true, eventId, rawGrade, reviewAccepted: true, session}
+        : gradeTransportFailure("response");
+};
 
 const nextTransportFailure = (kind: "request" | "response"): TopicNextCallResult => ({
     ok: false,
@@ -453,6 +589,218 @@ export const createHTMLTopic = async (title: string, html: string): Promise<Crea
         return {ok: false, failure: {errorCode: "host-rejected", retryable: false, acceptanceUnknown: false}};
     }
     return decodeCreateSuccess(envelope.data) || createTransportFailure("response");
+};
+
+const createItemTransportFailure = (kind: "request" | "response"): CreateItemResult => ({
+    ok: false,
+    failure: {errorCode: kind, retryable: true, acceptance: "unknown", kind},
+});
+
+export const createItem = async (elementId: string, prompt: string, answer: string): Promise<CreateItemResult> => {
+    if (!hasString({elementId}, "elementId") || typeof prompt !== "string" || prompt.trim().length === 0 ||
+        typeof answer !== "string" || answer.trim().length === 0) {
+        return {
+            ok: false,
+            failure: {
+                errorCode: "invalid-item-content",
+                retryable: false,
+                acceptance: "notAccepted",
+                kind: "response",
+            },
+        };
+    }
+
+    let envelope: unknown;
+    try {
+        envelope = await fetchSyncPost(CREATE_ITEM_ENDPOINT, {elementId, prompt, answer});
+    } catch (error) {
+        return createItemTransportFailure(failureKind(error));
+    }
+    if (!hasEnvelopeShape(envelope)) {
+        return createItemTransportFailure("response");
+    }
+    if (envelope.code !== 0) {
+        if (!isRecord(envelope.data)) {
+            return {
+                ok: false,
+                failure: {
+                    errorCode: "host-rejected",
+                    retryable: false,
+                    acceptance: "unknown",
+                    kind: "domain",
+                },
+            };
+        }
+        const accepted = envelope.data.createAccepted === true && envelope.data.elementId === elementId;
+        return {
+            ok: false,
+            failure: {
+                errorCode: hasString(envelope.data, "errorCode") ? getString(envelope.data, "errorCode") : "host-rejected",
+                retryable: typeof envelope.data.retryable === "boolean" ? envelope.data.retryable : false,
+                acceptance: accepted ? "accepted" : envelope.data.createAccepted === false ? "notAccepted" : "unknown",
+                acceptedElementId: accepted ? elementId : undefined,
+                kind: "domain",
+            },
+        };
+    }
+
+    const data = envelope.data;
+    if (!isRecord(data) || data.elementId !== elementId || data.createAccepted !== true ||
+        data.reviewAccepted !== false || data.retryable !== false ||
+        (hasOwn(data, "eventId") && data.eventId !== "") || !isRecord(data.item) ||
+        data.item.elementId !== elementId || data.item.processingState !== "processed" ||
+        !hasString(data.item, "contentRevision") || data.item.lifecycleState !== "pending" ||
+        (hasOwn(data.item, "sourcePath") && typeof data.item.sourcePath !== "string") ||
+        (hasOwn(data.item, "sortRank") && (!Number.isInteger(data.item.sortRank) ||
+            typeof data.item.sortRank !== "number"))) {
+        return createItemTransportFailure("response");
+    }
+    return {
+        ok: true,
+        item: {
+            elementId,
+            processingState: "processed",
+            contentRevision: getString(data.item, "contentRevision"),
+            sourcePath: typeof data.item.sourcePath === "string" ? data.item.sourcePath : undefined,
+            sortRank: typeof data.item.sortRank === "number" ? data.item.sortRank : undefined,
+            lifecycleState: "pending",
+        },
+    };
+};
+
+const itemAuthoringFailure = (
+    errorCode: string,
+    retryable: boolean,
+    kind: "request" | "response" | "domain",
+): ItemAuthoringResult => ({ok: false, failure: {errorCode, retryable, kind}});
+
+export const getItemAuthoring = async (elementId: string): Promise<ItemAuthoringResult> => {
+    if (!hasString({elementId}, "elementId")) {
+        return itemAuthoringFailure("response", false, "response");
+    }
+    let envelope: unknown;
+    try {
+        envelope = await fetchSyncPost(ITEM_AUTHORING_ENDPOINT, {elementId});
+    } catch (error) {
+        const kind = failureKind(error);
+        return itemAuthoringFailure(kind, true, kind);
+    }
+    if (!hasEnvelopeShape(envelope)) {
+        return itemAuthoringFailure("response", true, "response");
+    }
+    if (envelope.code !== 0) {
+        return isRecord(envelope.data)
+            ? itemAuthoringFailure(
+                hasString(envelope.data, "errorCode") ? getString(envelope.data, "errorCode") : "host-rejected",
+                typeof envelope.data.retryable === "boolean" ? envelope.data.retryable : false,
+                "domain",
+            )
+            : itemAuthoringFailure("host-rejected", false, "domain");
+    }
+    const data = envelope.data;
+    if (!isRecord(data) || data.elementId !== elementId || typeof data.prompt !== "string" ||
+        data.prompt.trim().length === 0 || typeof data.answer !== "string" || data.answer.trim().length === 0 ||
+        !hasString(data, "contentRevision")) {
+        return itemAuthoringFailure("response", true, "response");
+    }
+    return {
+        ok: true,
+        authoring: {
+            elementId,
+            prompt: data.prompt,
+            answer: data.answer,
+            contentRevision: getString(data, "contentRevision"),
+        },
+    };
+};
+
+const decodeAcceptedItemQAChange = (value: unknown): AcceptedItemQAChange | undefined => {
+    if (!isRecord(value) || value.kind !== "SaveItemQA" || !hasString(value, "elementId") ||
+        value.changedField !== "itemQA" || !hasString(value, "revision") || !isRecord(value.itemQA) ||
+        typeof value.itemQA.prompt !== "string" || value.itemQA.prompt.trim().length === 0 ||
+        typeof value.itemQA.answer !== "string" || value.itemQA.answer.trim().length === 0 ||
+        value.itemQA.contentRevision !== value.revision || typeof value.changed !== "boolean" ||
+        value.changeAccepted !== true || hasOwn(value, "canonicalValue")) {
+        return undefined;
+    }
+    return {
+        kind: "SaveItemQA",
+        elementId: getString(value, "elementId"),
+        changedField: "itemQA",
+        revision: getString(value, "revision"),
+        itemQA: {
+            prompt: value.itemQA.prompt,
+            answer: value.itemQA.answer,
+            contentRevision: getString(value, "revision"),
+        },
+        changed: value.changed,
+        changeAccepted: true,
+    };
+};
+
+const itemQAChangeTransportFailure = (errorCode: "request" | "response"): ItemQAChangeResult => ({
+    ok: false,
+    failure: {kind: "failed", errorCode, retryable: true, acceptanceUnknown: true},
+});
+
+export const saveItemQA = async (
+    elementId: string,
+    expectedContentRevision: string,
+    prompt: string,
+    answer: string,
+): Promise<ItemQAChangeResult> => {
+    if (!hasString({elementId}, "elementId") || !hasString({expectedContentRevision}, "expectedContentRevision") ||
+        typeof prompt !== "string" || prompt.trim().length === 0 || typeof answer !== "string" ||
+        answer.trim().length === 0) {
+        return {
+            ok: false,
+            failure: {kind: "failed", errorCode: "invalid-item-content", retryable: false, acceptanceUnknown: false},
+        };
+    }
+    let envelope: unknown;
+    try {
+        envelope = await fetchSyncPost(SAVE_ITEM_QA_ENDPOINT, {elementId, expectedContentRevision, prompt, answer});
+    } catch (error) {
+        return itemQAChangeTransportFailure(failureKind(error));
+    }
+    if (!hasEnvelopeShape(envelope)) {
+        return itemQAChangeTransportFailure("response");
+    }
+    if (envelope.code === 0) {
+        const change = decodeAcceptedItemQAChange(envelope.data);
+        return change ? {ok: true, change} : itemQAChangeTransportFailure("response");
+    }
+    if (!isRecord(envelope.data)) {
+        return {ok: false, failure: {kind: "failed", errorCode: "host-rejected", retryable: false, acceptanceUnknown: false}};
+    }
+    const data = envelope.data;
+    if (data.errorCode === "element-revision-conflict" && data.changeAccepted === false &&
+        data.elementId === elementId && data.changedField === "itemQA" && hasString(data, "currentRevision")) {
+        return {
+            ok: false,
+            failure: {
+                kind: "conflict",
+                elementId,
+                changedField: "itemQA",
+                currentRevision: getString(data, "currentRevision"),
+            },
+        };
+    }
+    if (data.changeAccepted === true) {
+        const change = decodeAcceptedItemQAChange(data.acceptedChange);
+        if (change && change.elementId === elementId) {
+            return {ok: false, failure: {kind: "acceptedRecovering", change}};
+        }
+    }
+    return {
+        ok: false,
+        failure: {
+            kind: "failed",
+            errorCode: hasString(data, "errorCode") ? getString(data, "errorCode") : "host-rejected",
+            retryable: typeof data.retryable === "boolean" ? data.retryable : false,
+            acceptanceUnknown: data.changeAccepted !== false,
+        },
+    };
 };
 
 const changeElement = async (

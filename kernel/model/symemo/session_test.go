@@ -70,6 +70,35 @@ func TestTopicTargetLoadUsesElementLevelUnavailableError(t *testing.T) {
 	}
 }
 
+func TestItemTargetLoadCapturesPromptAndAnswerFromCurrentElement(t *testing.T) {
+	engine, _ := newFixtureEngine(t)
+	stale := ReviewTarget{
+		Kind:      "element.item",
+		ElementID: fixtureElementID,
+		Prompt:    "stale queue prompt",
+	}
+
+	engine.session.mu.Lock()
+	engine.session.state = SessionState{SessionID: "item-capture-session", Status: SessionActive}
+	state, err := engine.session.enterTargetsLocked(StageOutstanding, []ReviewTarget{stale})
+	engine.session.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	element, err := engine.index.element(fixtureElementID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Current == nil || state.Current.Prompt != element.Payload.Prompt || state.Current.Answer != "" || state.AnswerVisible {
+		t.Fatalf("question snapshot = %#v", state)
+	}
+
+	shown, err := engine.session.ShowAnswer(fixtureElementID)
+	if err != nil || shown.Current == nil || shown.Current.Prompt != element.Payload.Prompt || shown.Current.Answer != element.Payload.Answer {
+		t.Fatalf("answer snapshot = %#v, err=%v", shown, err)
+	}
+}
+
 func TestPendingStopDiscardsOnlyLocalSessionCursor(t *testing.T) {
 	session := &learningSession{
 		state: SessionState{

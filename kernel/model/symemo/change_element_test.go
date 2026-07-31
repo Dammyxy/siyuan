@@ -772,3 +772,126 @@ func assertRawJSONPath(t *testing.T, data []byte, path []string, want string) {
 		t.Fatalf("path %v = %#v, want %#v in %s", path, current, want, data)
 	}
 }
+
+func TestSaveItemQAChangedAndNoOpUseOneAggregateRevision(t *testing.T) {
+	engine, config, item := newItemAuthorityEngine(t, supportedTestItem("20260731160000-save001", "Original prompt", "Original answer", "rev-v1-original"))
+	beforeReviews := snapshotDirectoryFiles(t, config.ReviewsRoot())
+
+	changed, err := engine.ChangeElement(t.Context(), ChangeElementCommand{Kind: ChangeElementSaveItemQA, SaveItemQA: SaveItemQACommand{
+		ElementID: item.ID, ExpectedContentRevision: item.Payload.Revision, Prompt: "  Updated prompt\n第二行  ", Answer: "  Updated answer\n第二行  ",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Kind != ChangeElementSaveItemQA || changed.ChangedField != ChangedElementItemQA || !changed.Changed || !changed.ChangeAccepted || changed.ItemQA == nil || changed.Revision != changed.ItemQA.ContentRevision || changed.Revision == item.Payload.Revision || changed.CanonicalValue != "" {
+		t.Fatalf("changed result = %#v", changed)
+	}
+	if changed.ItemQA.Prompt != "  Updated prompt\n第二行  " || changed.ItemQA.Answer != "  Updated answer\n第二行  " {
+		t.Fatalf("changed pair = %#v", changed.ItemQA)
+	}
+
+	noOp, err := engine.ChangeElement(t.Context(), ChangeElementCommand{Kind: ChangeElementSaveItemQA, SaveItemQA: SaveItemQACommand{
+		ElementID: item.ID, ExpectedContentRevision: "stale-but-equal", Prompt: changed.ItemQA.Prompt, Answer: changed.ItemQA.Answer,
+	}})
+	if err != nil || noOp.Changed || !noOp.ChangeAccepted || noOp.ItemQA == nil || noOp.ItemQA.ContentRevision != changed.ItemQA.ContentRevision {
+		t.Fatalf("no-op result=%#v err=%v", noOp, err)
+	}
+	if !equalByteMaps(beforeReviews, snapshotDirectoryFiles(t, config.ReviewsRoot())) {
+		t.Fatal("Q/A saves changed review authority")
+	}
+}
+
+func TestSaveItemQAStaleDifferentConflictsWithoutOverwriting(t *testing.T) {
+	engine, config, item := newItemAuthorityEngine(t, supportedTestItem("20260731160100-stale01", "Current prompt", "Current answer", "rev-v1-current"))
+	before := readOptionalFile(t, filepath.Join(config.ElementsRoot(), item.ID+".sme"))
+
+	result, err := engine.ChangeElement(t.Context(), ChangeElementCommand{Kind: ChangeElementSaveItemQA, SaveItemQA: SaveItemQACommand{
+		ElementID: item.ID, ExpectedContentRevision: "rev-v1-stale", Prompt: "Stale prompt", Answer: "Stale answer",
+	}})
+	domainErr, ok := AsDomainError(err)
+	if !ok || domainErr.Code != ErrElementRevisionConflict || domainErr.ChangedField != ChangedElementItemQA || domainErr.CurrentRevision != item.Payload.Revision || domainErr.ChangeAccepted || result.ChangeAccepted {
+		t.Fatalf("conflict result=%#v err=%#v", result, domainErr)
+	}
+	after := readOptionalFile(t, filepath.Join(config.ElementsRoot(), item.ID+".sme"))
+	if string(after) != string(before) {
+		t.Fatalf("stale save changed authority\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
+func TestSaveInternalItemQAPreservesOwningRootSiblingsRelationsAndUnknownFields(t *testing.T) {
+	config := copyFixtureWorkspace(t)
+	installFixtureSchedulerConfig(t, config)
+	rootID := "20260731160200-root001"
+	itemID := "20260731160201-item001"
+	rootPath := filepath.Join(config.ElementsRoot(), rootID+".sme")
+	raw := []byte(`{
+  "spec": 1,
+  "id": "20260731160200-root001",
+  "type": "concept",
+  "processingState": "processed",
+  "payloadSpec": 1,
+  "payload": {"kind": "outline", "futureRootPayload": {"keep": true}},
+  "relations": [{"spec": 1, "type": "related", "targetElementId": "20260719010101-abcdefg"}],
+  "futureEnvelope": "preserve-root",
+  "children": [
+    {
+      "spec": 1,
+      "id": "20260731160201-item001",
+      "type": "item",
+      "processingState": "processed",
+      "payloadSpec": 1,
+      "payload": {"kind": "qa", "prompt": "Internal prompt", "answer": "Internal answer", "revision": "rev-v1-internal", "futurePayload": [1, 2, 3]},
+      "relations": [{"spec": 1, "type": "source", "targetElementId": "20260719010101-abcdefg"}],
+      "futureChildEnvelope": "preserve-child"
+    },
+    {
+      "spec": 1,
+      "id": "20260731160202-sibling",
+      "type": "item",
+      "processingState": "processed",
+      "payloadSpec": 1,
+      "payload": {"kind": "qa", "prompt": "Sibling prompt", "answer": "Sibling answer", "revision": "rev-v1-sibling"}
+    }
+  ]
+}
+`)
+	if err := os.WriteFile(rootPath, raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := NewEngine(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = engine.Close() })
+
+	result, err := engine.ChangeElement(t.Context(), ChangeElementCommand{Kind: ChangeElementSaveItemQA, SaveItemQA: SaveItemQACommand{
+		ElementID: itemID, ExpectedContentRevision: "rev-v1-internal", Prompt: "Updated internal prompt", Answer: "Updated internal answer",
+	}})
+	if err != nil || result.ItemQA == nil || !result.Changed {
+		t.Fatalf("internal result=%#v err=%v", result, err)
+	}
+	after := readOptionalFile(t, rootPath)
+	for _, retained := range []string{"preserve-root", "futureRootPayload", "preserve-child", "futurePayload", "Sibling prompt", "Sibling answer", "related", "source"} {
+		if !strings.Contains(string(after), retained) {
+			t.Fatalf("owning root lost %q: %s", retained, after)
+		}
+	}
+	for _, updated := range []string{"Updated internal prompt", "Updated internal answer", result.Revision} {
+		if !strings.Contains(string(after), updated) {
+			t.Fatalf("owning root missing %q: %s", updated, after)
+		}
+	}
+}
+
+func newItemAuthorityEngine(t *testing.T, item Element) (*Engine, Config, Element) {
+	t.Helper()
+	config := copyFixtureWorkspace(t)
+	installFixtureSchedulerConfig(t, config)
+	writeTestJSON(t, filepath.Join(config.ElementsRoot(), item.ID+".sme"), item)
+	engine, err := NewEngine(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = engine.Close() })
+	return engine, config, item
+}

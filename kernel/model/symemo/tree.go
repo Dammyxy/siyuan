@@ -19,6 +19,7 @@ package symemo
 import (
 	"context"
 	"sort"
+	"strings"
 )
 
 func buildElementTree(records map[string]elementSourceRecord, projections map[string]SchedulingProjection, includeSchedule bool) []ElementTreeNode {
@@ -57,6 +58,9 @@ func buildElementTree(records map[string]elementSourceRecord, projections map[st
 
 func treeNodeFromRecord(record elementSourceRecord, projection SchedulingProjection, includeSchedule bool) ElementTreeNode {
 	element := record.Element
+	if element.Type == "item" && element.Payload.Kind == "qa" {
+		element.Title = derivedItemTitle(element.Payload.Prompt)
+	}
 	node := ElementTreeNode{
 		ElementID:                element.ID,
 		Type:                     element.Type,
@@ -98,6 +102,9 @@ func projectedTreeNode(nodes []ElementTreeNode, elementID string) (ElementTreeNo
 }
 
 func elementReadView(element Element, node ElementTreeNode) ElementReadView {
+	if element.Type == "item" && element.Payload.Kind == "qa" {
+		element.Title = derivedItemTitle(element.Payload.Prompt)
+	}
 	return ElementReadView{
 		ElementEnvelope:          ElementEnvelope(element),
 		ParentElementID:          node.ParentElementID,
@@ -113,6 +120,21 @@ func elementReadView(element Element, node ElementTreeNode) ElementReadView {
 		MaterialSourceStatus:     node.MaterialSourceStatus,
 		MaterialSourceDiagnostic: node.MaterialSourceDiagnostic,
 	}
+}
+
+func derivedItemTitle(prompt string) string {
+	for _, line := range strings.FieldsFunc(prompt, func(r rune) bool { return r == '\r' || r == '\n' }) {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		if len(runes) > 512 {
+			runes = runes[:512]
+		}
+		return string(runes)
+	}
+	return ""
 }
 
 func overlayElementBlockReference(ctx context.Context, reader BlockReferenceReader, view ElementReadView) (ElementReadView, error) {

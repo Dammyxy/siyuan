@@ -82,6 +82,7 @@ export class Elements extends Model {
         header.append(
             logo,
             createHeaderIcon("add", "iconAdd"),
+            createHeaderIcon("add-item", "iconRiffCard"),
             createHeaderIcon("refresh", "iconRefresh"),
             createHeaderIcon("collapse", "iconContract"),
             createHeaderIcon("min", "iconMin"),
@@ -92,15 +93,30 @@ export class Elements extends Model {
         this.treeElement = body;
         this.refreshIconElement = this.element.querySelector('[data-type="refresh"] svg') as SVGElement;
         const addElement = this.element.querySelector('[data-type="add"]');
+        const addItemElement = this.element.querySelector('[data-type="add-item"]');
         addElement?.setAttribute("aria-label", language("new"));
+        addItemElement?.setAttribute("aria-label", language("symemoNewItem"));
         if (window.siyuan.config.readonly) {
             addElement?.classList.add("fn__none");
             addElement?.setAttribute("aria-disabled", "true");
+            addItemElement?.classList.add("fn__none");
+            addItemElement?.setAttribute("aria-disabled", "true");
         }
         this.element.querySelector('[data-type="refresh"]')?.setAttribute("aria-label", language("refresh"));
         this.element.querySelector('[data-type="collapse"]')?.setAttribute("aria-label", language("symemoCollapseAll"));
         this.element.querySelector('[data-type="min"]')?.setAttribute("aria-label", language("min"));
         this.element.querySelector('[data-type="add"]')?.addEventListener("click", () => void this.createEmptyTopic());
+        addItemElement?.addEventListener("click", () => {
+            void import("./ItemCreateDialog").then(({openItemCreateDialog}) => {
+                openItemCreateDialog({
+                    app: this.app,
+                    refreshTree: async () => {
+                        if (this.requestPromise) await this.requestPromise;
+                        await this.loadTree();
+                    },
+                });
+            });
+        });
         this.element.querySelector('[data-type="refresh"]')?.addEventListener("click", () => void this.loadTree());
         this.element.querySelector('[data-type="collapse"]')?.addEventListener("click", () => {
             this.expanded.clear();

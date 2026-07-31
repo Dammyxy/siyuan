@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"math/rand"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -101,5 +102,45 @@ func permutedElementWalker(t *testing.T, seed int64) func(string, fs.WalkDirFunc
 			}
 		}
 		return nil
+	}
+}
+
+func TestItemTreeAndDetailDeriveCappedTitleFromFirstMeaningfulPromptLine(t *testing.T) {
+	promptLine := strings.Repeat("界", 600)
+	item := supportedTestItem("20260731171000-title01", "\n \t\n  "+promptLine+"  \nignored line", "Answer", "rev-v1-title")
+	engine, _, _ := newItemAuthorityEngine(t, item)
+	want := strings.Repeat("界", 512)
+
+	tree, err := engine.Query(t.Context(), Query{Kind: QueryElementTree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, found := projectedTreeNode(tree.Nodes, item.ID)
+	if !found || node.Title != want || len([]rune(node.Title)) != 512 {
+		t.Fatalf("derived tree node = %#v", node)
+	}
+	detail, err := engine.Query(t.Context(), Query{Kind: QueryElement, ElementID: item.ID})
+	if err != nil || detail.Element == nil || detail.Element.Title != want {
+		t.Fatalf("derived detail=%#v err=%v", detail.Element, err)
+	}
+}
+
+func TestItemDerivedTreeTitleRefreshesAfterAggregateEdit(t *testing.T) {
+	item := supportedTestItem("20260731171100-refresh1", "Old label\nrest", "Old answer", "rev-v1-old")
+	engine, _, _ := newItemAuthorityEngine(t, item)
+
+	saved, err := engine.ChangeElement(t.Context(), ChangeElementCommand{Kind: ChangeElementSaveItemQA, SaveItemQA: SaveItemQACommand{
+		ElementID: item.ID, ExpectedContentRevision: item.Payload.Revision, Prompt: "\n  New derived label  \nrest", Answer: "New answer",
+	}})
+	if err != nil || !saved.ChangeAccepted {
+		t.Fatalf("save result=%#v err=%v", saved, err)
+	}
+	tree, err := engine.Query(t.Context(), Query{Kind: QueryElementTree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, found := projectedTreeNode(tree.Nodes, item.ID)
+	if !found || node.Title != "New derived label" {
+		t.Fatalf("refreshed node = %#v", node)
 	}
 }

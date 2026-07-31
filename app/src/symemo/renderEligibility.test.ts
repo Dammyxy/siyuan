@@ -42,4 +42,22 @@ describe("getRenderDecision", () => {
             assert.deepEqual(getRenderDecision(detail), {kind: "rendererUnavailable", reason});
         }
     });
+
+    it("selects ordinary supported Q/A Items without exposing an answer", () => {
+        const item: ElementDetailView = {
+            elementId: "item-id",
+            type: "item",
+            title: "Question",
+            sourceMode: "opaque",
+            supportStatus: "supported",
+            item: {
+                kind: "qa",
+                prompt: "Question",
+                revision: "rev-v1-item",
+            },
+        } as ElementDetailView;
+
+        assert.deepEqual(getRenderDecision(item), {kind: "itemAuthoring"});
+        assert.equal(JSON.stringify(item).includes("answer"), false);
+    });
 });

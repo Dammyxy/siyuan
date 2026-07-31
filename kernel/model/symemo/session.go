@@ -371,10 +371,9 @@ func (session *learningSession) advanceLocked(ctx context.Context) error {
 		return err
 	}
 	remainingTargets = remainingTargets[1:]
-	next.Answer = ""
+	next, session.currentAnswer = captureTargetContent(next, element)
 	session.remainingTargets = remainingTargets
 	session.drillOrder = drillOrder
-	session.currentAnswer = element.Payload.Answer
 	session.state.Status = SessionActive
 	session.state.Phase = PhaseQuestion
 	session.state.AnswerVisible = false
@@ -415,8 +414,7 @@ func (session *learningSession) enterTargetsLocked(stage LearningStage, targets 
 	if err != nil {
 		return SessionState{}, err
 	}
-	target.Answer = ""
-	session.currentAnswer = element.Payload.Answer
+	target, session.currentAnswer = captureTargetContent(target, element)
 	session.remainingTargets = append(session.remainingTargets[:0], targets[1:]...)
 	if stage == StageFinalDrill {
 		session.drillOrder = newFinalDrillOrderState(session.state.SessionID, targets)
@@ -429,6 +427,15 @@ func (session *learningSession) enterTargetsLocked(stage LearningStage, targets 
 	session.state.AnswerVisible = false
 	session.state.RemainingElementIDs = remainingElementIDs(session.remainingTargets)
 	return session.publicState(), nil
+}
+
+func captureTargetContent(target ReviewTarget, element Element) (ReviewTarget, string) {
+	target.Answer = ""
+	if target.Kind != "element.item" || element.Type != "item" || element.Payload.Kind != "qa" {
+		return target, ""
+	}
+	target.Prompt = element.Payload.Prompt
+	return target, element.Payload.Answer
 }
 
 func (session *learningSession) offerNextStageLocked(ctx context.Context, completed LearningStage) (SessionState, error) {

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/88250/gulu"
 	"github.com/gin-gonic/gin"
@@ -87,15 +88,18 @@ func registerSymemoRoutes(ginServer *gin.Engine) {
 	ginServer.Handle("POST", "/api/symemo/getElementSubset", model.CheckAuth, model.CheckAdminRole, getSymemoElementSubset)
 	ginServer.Handle("POST", "/api/symemo/getElementTree", model.CheckAuth, model.CheckAdminRole, getSymemoElementTree)
 	ginServer.Handle("POST", "/api/symemo/getElement", model.CheckAuth, model.CheckAdminRole, getSymemoElement)
+	ginServer.Handle("POST", "/api/symemo/getItemAuthoring", model.CheckAuth, model.CheckAdminRole, getSymemoItemAuthoring)
 	ginServer.Handle("POST", "/api/symemo/getElementSourceDiagnostics", model.CheckAuth, model.CheckAdminRole, getSymemoElementSourceDiagnostics)
 	ginServer.Handle("POST", "/api/symemo/createHTMLTopic", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, createHTMLTopic)
+	ginServer.Handle("POST", "/api/symemo/createItem", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, createSymemoItem)
 	ginServer.Handle("POST", "/api/symemo/renameElement", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, renameSymemoElement)
 	ginServer.Handle("POST", "/api/symemo/saveTopicHTML", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, saveSymemoTopicHTML)
+	ginServer.Handle("POST", "/api/symemo/saveItemQA", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, saveSymemoItemQA)
 	ginServer.Handle("POST", "/api/symemo/startLearning", model.CheckAuth, model.CheckAdminRole, startSymemoLearning)
-	ginServer.Handle("POST", "/api/symemo/showAnswer", model.CheckAuth, model.CheckAdminRole, showSymemoAnswer)
+	ginServer.Handle("POST", "/api/symemo/showAnswer", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, showSymemoAnswer)
 	ginServer.Handle("POST", "/api/symemo/gradeItem", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, gradeSymemoItem)
 	ginServer.Handle("POST", "/api/symemo/nextTopic", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, nextSymemoTopic)
-	ginServer.Handle("POST", "/api/symemo/acceptLearningStage", model.CheckAuth, model.CheckAdminRole, acceptSymemoLearningStage)
+	ginServer.Handle("POST", "/api/symemo/acceptLearningStage", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, acceptSymemoLearningStage)
 	ginServer.Handle("POST", "/api/symemo/declineLearningStage", model.CheckAuth, model.CheckAdminRole, declineSymemoLearningStage)
 	ginServer.Handle("POST", "/api/symemo/gradeDrill", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, gradeSymemoDrill)
 	ginServer.Handle("POST", "/api/symemo/stopLearning", model.CheckAuth, model.CheckAdminRole, stopSymemoLearning)
@@ -123,6 +127,23 @@ type symemoElementDiagnosticsRequest struct {
 type symemoCreateHTMLTopicRequest struct {
 	Title string `json:"title"`
 	HTML  string `json:"html"`
+}
+
+type symemoCreateItemRequest struct {
+	ElementID string `json:"elementId"`
+	Prompt    string `json:"prompt"`
+	Answer    string `json:"answer"`
+}
+
+type symemoGetItemAuthoringRequest struct {
+	ElementID string `json:"elementId"`
+}
+
+type symemoSaveItemQARequest struct {
+	ElementID               string `json:"elementId"`
+	ExpectedContentRevision string `json:"expectedContentRevision"`
+	Prompt                  string `json:"prompt"`
+	Answer                  string `json:"answer"`
 }
 
 type symemoRenameElementRequest struct {
@@ -208,6 +229,22 @@ func getSymemoElement(c *gin.Context) {
 	writeSymemoSuccess(c, redactSymemoElementAnswer(result.Element))
 }
 
+func getSymemoItemAuthoring(c *gin.Context) {
+	var request symemoGetItemAuthoringRequest
+	if !bindGetItemAuthoringRequest(c, &request) {
+		return
+	}
+	if !ensureSymemoBooted(c) {
+		return
+	}
+	result, err := symemoQuery(c, symemo.Query{Kind: symemo.QueryItemAuthoring, ElementID: request.ElementID})
+	if err != nil {
+		writeSymemoError(c, err)
+		return
+	}
+	writeSymemoSuccess(c, result.ItemAuthoring)
+}
+
 func getSymemoElementSourceDiagnostics(c *gin.Context) {
 	var request symemoElementDiagnosticsRequest
 	if !bindSymemoRequest(c, &request) {
@@ -234,6 +271,22 @@ func createHTMLTopic(c *gin.Context) {
 		return
 	}
 	result, err := symemoCreateElement(c, symemo.CreateElementCommand{Kind: symemo.CreateElementAddNewTopic, AddNewTopic: symemo.AddNewTopicCommand{Title: request.Title, HTML: request.HTML}})
+	if err != nil {
+		writeSymemoError(c, err)
+		return
+	}
+	writeSymemoSuccess(c, result)
+}
+
+func createSymemoItem(c *gin.Context) {
+	var request symemoCreateItemRequest
+	if !bindCreateItemRequest(c, &request) {
+		return
+	}
+	if !ensureSymemoBooted(c) {
+		return
+	}
+	result, err := symemoCreateElement(c, symemo.CreateElementCommand{Kind: symemo.CreateElementCreateItem, CreateItem: symemo.CreateItemCommand{ElementID: request.ElementID, Prompt: request.Prompt, Answer: request.Answer}})
 	if err != nil {
 		writeSymemoError(c, err)
 		return
@@ -280,6 +333,22 @@ func saveSymemoTopicHTML(c *gin.Context) {
 			HTML:                     request.HTML,
 		},
 	})
+	if err != nil {
+		writeSymemoError(c, err)
+		return
+	}
+	writeSymemoSuccess(c, result)
+}
+
+func saveSymemoItemQA(c *gin.Context) {
+	var request symemoSaveItemQARequest
+	if !bindSaveItemQARequest(c, &request) {
+		return
+	}
+	if !ensureSymemoBooted(c) {
+		return
+	}
+	result, err := symemoChangeElement(c, symemo.ChangeElementCommand{Kind: symemo.ChangeElementSaveItemQA, SaveItemQA: symemo.SaveItemQACommand{ElementID: request.ElementID, ExpectedContentRevision: request.ExpectedContentRevision, Prompt: request.Prompt, Answer: request.Answer}})
 	if err != nil {
 		writeSymemoError(c, err)
 		return
@@ -451,6 +520,48 @@ func bindCreateHTMLTopicRequest(c *gin.Context, request *symemoCreateHTMLTopicRe
 	})
 }
 
+func bindCreateItemRequest(c *gin.Context, request *symemoCreateItemRequest) bool {
+	if !bindSymemoStringFields(c, map[string]*string{
+		"elementId": &request.ElementID,
+		"prompt":    &request.Prompt,
+		"answer":    &request.Answer,
+	}) {
+		return false
+	}
+	if request.ElementID == "" || strings.TrimSpace(request.Prompt) == "" || strings.TrimSpace(request.Answer) == "" {
+		writeSymemoInvalidRequest(c)
+		return false
+	}
+	return true
+}
+
+func bindGetItemAuthoringRequest(c *gin.Context, request *symemoGetItemAuthoringRequest) bool {
+	if !bindSymemoStringFields(c, map[string]*string{"elementId": &request.ElementID}) {
+		return false
+	}
+	if request.ElementID == "" {
+		writeSymemoInvalidRequest(c)
+		return false
+	}
+	return true
+}
+
+func bindSaveItemQARequest(c *gin.Context, request *symemoSaveItemQARequest) bool {
+	if !bindSymemoStringFields(c, map[string]*string{
+		"elementId":               &request.ElementID,
+		"expectedContentRevision": &request.ExpectedContentRevision,
+		"prompt":                  &request.Prompt,
+		"answer":                  &request.Answer,
+	}) {
+		return false
+	}
+	if request.ElementID == "" || request.ExpectedContentRevision == "" || strings.TrimSpace(request.Prompt) == "" || strings.TrimSpace(request.Answer) == "" {
+		writeSymemoInvalidRequest(c)
+		return false
+	}
+	return true
+}
+
 func bindRenameElementRequest(c *gin.Context, request *symemoRenameElementRequest) bool {
 	return bindSymemoStringFields(c, map[string]*string{
 		"elementId":             &request.ElementID,
@@ -610,7 +721,11 @@ func symemoFailureData(domainErr *symemo.DomainError) map[string]any {
 		data["currentRevision"] = domainErr.CurrentRevision
 	}
 	if domainErr.AcceptedChange != nil {
-		data["change"] = domainErr.AcceptedChange
+		if domainErr.AcceptedChange.ChangedField == symemo.ChangedElementItemQA {
+			data["acceptedChange"] = domainErr.AcceptedChange
+		} else {
+			data["change"] = domainErr.AcceptedChange
+		}
 	}
 	return data
 }

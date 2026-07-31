@@ -13,6 +13,9 @@ const primaryLanguageKey: Record<LearningPrimaryAction, string> = {
     retryNext: "symemoRetryNext",
     continue: "symemoContinueLearning",
     resume: "symemoResumeLearning",
+    showAnswer: "symemoShowAnswer",
+    acceptPending: "symemoAcceptPending",
+    declineFinalDrill: "symemoEndLearning",
 };
 
 const language = (key: string): string => window.siyuan?.languages?.[key] || "";

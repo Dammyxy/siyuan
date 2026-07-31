@@ -47,6 +47,10 @@ type changeElementPlan struct {
 	canonicalValue   string
 	currentValue     string
 	currentRevision  string
+	prompt           string
+	answer           string
+	currentPrompt    string
+	currentAnswer    string
 	cleaningPolicy   string
 	assignments      []MaterialNodeIdentityAssignment
 	record           elementSourceRecord
@@ -71,7 +75,11 @@ func (engine *Engine) changeElement(ctx context.Context, command ChangeElementCo
 		Changed:                 false,
 		ChangeAccepted:          true,
 	}
-	if plan.canonicalValue == plan.currentValue {
+	if plan.field == ChangedElementItemQA {
+		result.ItemQA = &CanonicalItemQA{Prompt: plan.prompt, Answer: plan.answer, ContentRevision: plan.currentRevision}
+	}
+	if (plan.field == ChangedElementItemQA && plan.prompt == plan.currentPrompt && plan.answer == plan.currentAnswer) ||
+		(plan.field != ChangedElementItemQA && plan.canonicalValue == plan.currentValue) {
 		return result, nil
 	}
 	if plan.expectedRevision != plan.currentRevision {
@@ -79,6 +87,9 @@ func (engine *Engine) changeElement(ctx context.Context, command ChangeElementCo
 	}
 	result.Revision = newElementAuthoringRevisionToken()
 	result.Changed = true
+	if result.ItemQA != nil {
+		result.ItemQA.ContentRevision = result.Revision
+	}
 	patch, err := patchChangeElementRoot(plan, result.Revision)
 	if err != nil {
 		return ChangeElementResult{}, err
@@ -115,7 +126,11 @@ func (engine *Engine) planChangeElement(command ChangeElementCommand) (changeEle
 		code := diagnosedElementSourceCode(shape.elementID, scan.Diagnostics)
 		return changeElementPlan{}, changeElementDomainError(code, changeElementSourceMessage(code), shape.elementID, shape.field, code == ErrElementSourceUnavailable, false, nil)
 	}
-	if !isSupportedV1HTMLTopic(record.Element.Type, record.Element.Payload) {
+	if shape.field == ChangedElementItemQA {
+		if record.Element.Type != "item" || record.Element.Payload.Kind != "qa" {
+			return changeElementPlan{}, changeElementDomainError(ErrUnsupportedOperation, "Element is not writable Q/A Item content", shape.elementID, shape.field, false, false, nil)
+		}
+	} else if !isSupportedV1HTMLTopic(record.Element.Type, record.Element.Payload) {
 		return changeElementPlan{}, changeElementDomainError(ErrUnsupportedOperation, "Element is not writable HTML Topic material", shape.elementID, shape.field, false, false, nil)
 	}
 	rootPath := filepath.Join(engine.config.ElementsRoot(), filepath.FromSlash(record.SourcePath))
@@ -161,6 +176,9 @@ func (engine *Engine) planChangeElement(command ChangeElementCommand) (changeEle
 		plan.currentRevision = latestElement.TitleRevision
 		plan.canonicalValue = shape.value
 	case ChangedElementMaterial:
+		if !isSupportedV1HTMLTopic(latestElement.Type, latestElement.Payload) {
+			return changeElementPlan{}, changeElementDomainError(ErrUnsupportedOperation, "Element is not writable HTML Topic material", shape.elementID, shape.field, false, false, nil)
+		}
 		current := latestElement.Payload.Material
 		ownedNodeIDs := collectTopicHTMLNodeIDs(current.HTML)
 		globalNodeOwners := collectTopicHTMLNodeOwners(latestScan)
@@ -176,6 +194,15 @@ func (engine *Engine) planChangeElement(command ChangeElementCommand) (changeEle
 		plan.canonicalValue = cleaned.HTML
 		plan.cleaningPolicy = topicHTMLCleaningPolicyVersion
 		plan.assignments = cleaned.Assignments
+	case ChangedElementItemQA:
+		if latestElement.Type != "item" || latestElement.Payload.Kind != "qa" {
+			return changeElementPlan{}, changeElementDomainError(ErrUnsupportedOperation, "Element is not writable Q/A Item content", shape.elementID, shape.field, false, false, nil)
+		}
+		plan.currentPrompt = latestElement.Payload.Prompt
+		plan.currentAnswer = latestElement.Payload.Answer
+		plan.currentRevision = latestElement.Payload.Revision
+		plan.prompt = shape.prompt
+		plan.answer = shape.answer
 	}
 	return plan, nil
 }
@@ -216,9 +243,6 @@ func changeElementAuthorityFromRootBytes(data []byte, elementID string) (Element
 		}
 		return Element{}, changeElementDomainError(code, changeElementSourceMessage(code), elementID, "", code == ErrElementSourceUnavailable, false, nil)
 	}
-	if !isSupportedV1HTMLTopic(matches[0].Type, matches[0].Payload) {
-		return Element{}, changeElementDomainError(ErrUnsupportedOperation, "Element is not writable HTML Topic material", elementID, "", false, false, nil)
-	}
 	return matches[0], nil
 }
 
@@ -227,14 +251,17 @@ type changeElementCommandShape struct {
 	field            ChangedElementField
 	expectedRevision string
 	value            string
+	prompt           string
+	answer           string
 }
 
 func validateChangeElementCommand(command ChangeElementCommand) (changeElementCommandShape, error) {
 	hasRename := command.RenameElement != (RenameElementCommand{})
 	hasSave := command.SaveTopicHTML != (SaveTopicHTMLCommand{})
+	hasItemQA := command.SaveItemQA != (SaveItemQACommand{})
 	switch command.Kind {
 	case ChangeElementRenameElement:
-		if !hasRename {
+		if !hasRename || hasItemQA {
 			return changeElementCommandShape{}, changeElementDomainError(ErrInvalidChangeCommand, "ChangeElement command shape is invalid", command.RenameElement.ElementID, ChangedElementTitle, false, false, nil)
 		}
 		if hasSave {
@@ -249,13 +276,19 @@ func validateChangeElementCommand(command ChangeElementCommand) (changeElementCo
 		}
 		return changeElementCommandShape{elementID: command.RenameElement.ElementID, field: ChangedElementTitle, expectedRevision: command.RenameElement.ExpectedTitleRevision, value: title}, nil
 	case ChangeElementSaveTopicHTML:
-		if !hasSave {
+		if !hasSave || hasItemQA {
 			return changeElementCommandShape{}, changeElementDomainError(ErrInvalidChangeCommand, "ChangeElement command shape is invalid", command.SaveTopicHTML.ElementID, ChangedElementMaterial, false, false, nil)
 		}
 		if hasRename || command.SaveTopicHTML.ElementID == "" || command.SaveTopicHTML.ExpectedMaterialRevision == "" {
 			return changeElementCommandShape{}, changeElementDomainError(ErrInvalidChangeCommand, "ChangeElement command shape is invalid", command.SaveTopicHTML.ElementID, ChangedElementMaterial, false, false, nil)
 		}
 		return changeElementCommandShape{elementID: command.SaveTopicHTML.ElementID, field: ChangedElementMaterial, expectedRevision: command.SaveTopicHTML.ExpectedMaterialRevision, value: command.SaveTopicHTML.HTML}, nil
+	case ChangeElementSaveItemQA:
+		item := command.SaveItemQA
+		if !hasItemQA || hasRename || hasSave || item.ElementID == "" || item.ExpectedContentRevision == "" || strings.TrimSpace(item.Prompt) == "" || strings.TrimSpace(item.Answer) == "" {
+			return changeElementCommandShape{}, changeElementDomainError(ErrInvalidChangeCommand, "ChangeElement command shape is invalid", item.ElementID, ChangedElementItemQA, false, false, nil)
+		}
+		return changeElementCommandShape{elementID: item.ElementID, field: ChangedElementItemQA, expectedRevision: item.ExpectedContentRevision, prompt: item.Prompt, answer: item.Answer}, nil
 	default:
 		return changeElementCommandShape{}, changeElementDomainError(ErrInvalidChangeCommand, "ChangeElement command kind is invalid", "", "", false, false, nil)
 	}
@@ -307,6 +340,12 @@ func patchChangeElementObject(object map[string]json.RawMessage, plan changeElem
 			object["titleRevision"] = revisionData
 		case ChangedElementMaterial:
 			payloadData, err := patchChangeElementMaterialPayload(object["payload"], plan.canonicalValue, revision)
+			if err != nil {
+				return 0, err
+			}
+			object["payload"] = payloadData
+		case ChangedElementItemQA:
+			payloadData, err := patchChangeElementItemQAPayload(object["payload"], plan.prompt, plan.answer, revision)
 			if err != nil {
 				return 0, err
 			}
@@ -375,6 +414,22 @@ func patchChangeElementMaterialPayload(payloadRaw json.RawMessage, html, revisio
 	return json.Marshal(payload)
 }
 
+func patchChangeElementItemQAPayload(payloadRaw json.RawMessage, prompt, answer, revision string) (json.RawMessage, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(payloadRaw, &payload); err != nil {
+		return nil, err
+	}
+	promptData, _ := json.Marshal(prompt)
+	answerData, _ := json.Marshal(answer)
+	revisionData, _ := json.Marshal(revision)
+	kindData, _ := json.Marshal("qa")
+	payload["kind"] = kindData
+	payload["prompt"] = promptData
+	payload["answer"] = answerData
+	payload["revision"] = revisionData
+	return json.Marshal(payload)
+}
+
 func replaceChangeElementRoot(plan changeElementPlan) (bool, error) {
 	currentBeforeWrite, err := readChangeElementRootFile(plan.rootPath)
 	if err != nil || string(currentBeforeWrite) != string(plan.oldBytes) {
@@ -398,6 +453,12 @@ func replaceChangeElementRoot(plan changeElementPlan) (bool, error) {
 }
 
 func applyEffectiveElementAuthoringRevisions(element *Element) {
+	if element.Type == "item" && element.Payload.Kind == "qa" {
+		if element.Payload.Revision == "" {
+			element.Payload.Revision = legacyElementAuthoringRevision(element.ID, "item-qa", element.Payload.Prompt+"\x00"+element.Payload.Answer)
+		}
+		return
+	}
 	if !isSupportedV1HTMLTopic(element.Type, element.Payload) {
 		return
 	}
@@ -502,7 +563,7 @@ func changeElementConflictError(elementID string, field ChangedElementField, cur
 }
 
 func changeElementAcceptedError(code ErrorCode, message, elementID string, field ChangedElementField, accepted *ChangeElementResult, cause error) *DomainError {
-	err := changeElementDomainError(code, message, elementID, field, false, true, cause)
+	err := changeElementDomainError(code, message, elementID, field, true, true, cause)
 	err.AcceptedChange = accepted
 	return err
 }

@@ -593,6 +593,63 @@ func TestProjectionDeduplicatesSourceDiagnostics(t *testing.T) {
 	}
 }
 
+func TestItemRestartRebuildPreservesAuthorityAndDoesNotInventSchedule(t *testing.T) {
+	engine, config := newFixtureEngine(t)
+	const elementID = "20260731195000-rebuild"
+	initialEvents, err := config.LoadEventFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := engine.CreateElement(t.Context(), CreateElementCommand{Kind: CreateElementCreateItem, CreateItem: CreateItemCommand{ElementID: elementID, Prompt: "Restart question", Answer: "Restart answer"}})
+	if err != nil || !created.CreateAccepted {
+		t.Fatalf("create Item = %#v, err=%v", created, err)
+	}
+	authoring, err := engine.Query(t.Context(), Query{Kind: QueryItemAuthoring, ElementID: elementID})
+	if err != nil || authoring.ItemAuthoring == nil {
+		t.Fatalf("authoring after create = %#v, err=%v", authoring.ItemAuthoring, err)
+	}
+	updated, err := engine.ChangeElement(t.Context(), ChangeElementCommand{Kind: ChangeElementSaveItemQA, SaveItemQA: SaveItemQACommand{
+		ElementID: elementID, ExpectedContentRevision: authoring.ItemAuthoring.ContentRevision, Prompt: "Corrected restart question", Answer: "Corrected restart answer",
+	}})
+	if err != nil || !updated.Changed || !updated.ChangeAccepted || updated.ItemQA == nil {
+		t.Fatalf("save Item = %#v, err=%v", updated, err)
+	}
+	beforeAuthority := authoritativeSymemoJSON(t, config)
+	if events, loadErr := config.LoadEventFiles(); loadErr != nil || len(events) != len(initialEvents) {
+		t.Fatalf("created/edited Item changed schedule events: before=%d after=%d err=%v", len(initialEvents), len(events), loadErr)
+	}
+	if err = engine.Close(); err != nil {
+		t.Fatal(err)
+	}
+	removeSQLiteFiles(config.IndexPath())
+	rebuilt, err := NewEngine(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := rebuilt.Query(t.Context(), Query{Kind: QueryItemAuthoring, ElementID: elementID})
+	if err != nil || after.ItemAuthoring == nil || after.ItemAuthoring.Prompt != "Corrected restart question" || after.ItemAuthoring.Answer != "Corrected restart answer" || after.ItemAuthoring.ContentRevision != updated.Revision {
+		t.Fatalf("rebuilt authoring = %#v, err=%v", after.ItemAuthoring, err)
+	}
+	if rebuiltAuthority := authoritativeSymemoJSON(t, config); string(rebuiltAuthority) != string(beforeAuthority) {
+		t.Fatal("projection rebuild changed authoritative files")
+	}
+	for rebuild := 0; rebuild < 20; rebuild++ {
+		if err = rebuilt.Close(); err != nil {
+			t.Fatal(err)
+		}
+		removeSQLiteFiles(config.IndexPath())
+		rebuilt, err = NewEngine(t.Context(), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		check, queryErr := rebuilt.Query(t.Context(), Query{Kind: QueryItemAuthoring, ElementID: elementID})
+		if queryErr != nil || check.ItemAuthoring == nil || check.ItemAuthoring.ContentRevision != updated.Revision {
+			t.Fatalf("rebuild %d authoring = %#v, err=%v", rebuild, check.ItemAuthoring, queryErr)
+		}
+	}
+	_ = rebuilt.Close()
+}
+
 func assertSourceDiagnostics(t *testing.T, actual []ElementSourceDiagnostic, expected map[string]ElementSourceDiagnostic) {
 	t.Helper()
 	if len(actual) != len(expected) {

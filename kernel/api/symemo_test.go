@@ -48,10 +48,13 @@ func TestSymemoRoutes(t *testing.T) {
 		"POST /api/symemo/getElementSubset":            false,
 		"POST /api/symemo/getElementTree":              false,
 		"POST /api/symemo/getElement":                  false,
+		"POST /api/symemo/getItemAuthoring":            false,
 		"POST /api/symemo/getElementSourceDiagnostics": false,
 		"POST /api/symemo/createHTMLTopic":             false,
+		"POST /api/symemo/createItem":                  false,
 		"POST /api/symemo/renameElement":               false,
 		"POST /api/symemo/saveTopicHTML":               false,
+		"POST /api/symemo/saveItemQA":                  false,
 		"POST /api/symemo/startLearning":               false,
 		"POST /api/symemo/showAnswer":                  false,
 		"POST /api/symemo/gradeItem":                   false,
@@ -575,15 +578,18 @@ func TestSymemoHandlersRemainTransportOnly(t *testing.T) {
 		`ginServer.Handle("POST", "/api/symemo/getElementSubset", model.CheckAuth, model.CheckAdminRole, getSymemoElementSubset)`,
 		`ginServer.Handle("POST", "/api/symemo/getElementTree", model.CheckAuth, model.CheckAdminRole, getSymemoElementTree)`,
 		`ginServer.Handle("POST", "/api/symemo/getElement", model.CheckAuth, model.CheckAdminRole, getSymemoElement)`,
+		`ginServer.Handle("POST", "/api/symemo/getItemAuthoring", model.CheckAuth, model.CheckAdminRole, getSymemoItemAuthoring)`,
 		`ginServer.Handle("POST", "/api/symemo/getElementSourceDiagnostics", model.CheckAuth, model.CheckAdminRole, getSymemoElementSourceDiagnostics)`,
 		`ginServer.Handle("POST", "/api/symemo/createHTMLTopic", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, createHTMLTopic)`,
+		`ginServer.Handle("POST", "/api/symemo/createItem", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, createSymemoItem)`,
 		`ginServer.Handle("POST", "/api/symemo/renameElement", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, renameSymemoElement)`,
 		`ginServer.Handle("POST", "/api/symemo/saveTopicHTML", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, saveSymemoTopicHTML)`,
+		`ginServer.Handle("POST", "/api/symemo/saveItemQA", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, saveSymemoItemQA)`,
 		`ginServer.Handle("POST", "/api/symemo/startLearning", model.CheckAuth, model.CheckAdminRole, startSymemoLearning)`,
-		`ginServer.Handle("POST", "/api/symemo/showAnswer", model.CheckAuth, model.CheckAdminRole, showSymemoAnswer)`,
+		`ginServer.Handle("POST", "/api/symemo/showAnswer", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, showSymemoAnswer)`,
 		`ginServer.Handle("POST", "/api/symemo/gradeItem", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, gradeSymemoItem)`,
 		`ginServer.Handle("POST", "/api/symemo/nextTopic", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, nextSymemoTopic)`,
-		`ginServer.Handle("POST", "/api/symemo/acceptLearningStage", model.CheckAuth, model.CheckAdminRole, acceptSymemoLearningStage)`,
+		`ginServer.Handle("POST", "/api/symemo/acceptLearningStage", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, acceptSymemoLearningStage)`,
 		`ginServer.Handle("POST", "/api/symemo/declineLearningStage", model.CheckAuth, model.CheckAdminRole, declineSymemoLearningStage)`,
 		`ginServer.Handle("POST", "/api/symemo/gradeDrill", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, gradeSymemoDrill)`,
 		`ginServer.Handle("POST", "/api/symemo/stopLearning", model.CheckAuth, model.CheckAdminRole, stopSymemoLearning)`,
@@ -592,6 +598,28 @@ func TestSymemoHandlersRemainTransportOnly(t *testing.T) {
 	for _, registration := range registrations {
 		if !strings.Contains(source, registration) {
 			t.Errorf("missing protected route registration %q", registration)
+		}
+	}
+}
+
+func TestItemAlphaHandlersDeclareStrictOneToOneTransportContracts(t *testing.T) {
+	data, err := os.ReadFile("symemo.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(data)
+	for _, want := range []string{
+		`func bindCreateItemRequest(c *gin.Context, request *symemoCreateItemRequest) bool`,
+		`func bindGetItemAuthoringRequest(c *gin.Context, request *symemoGetItemAuthoringRequest) bool`,
+		`func bindSaveItemQARequest(c *gin.Context, request *symemoSaveItemQARequest) bool`,
+		`Kind: symemo.CreateElementCreateItem`,
+		`CreateItem: symemo.CreateItemCommand{ElementID: request.ElementID, Prompt: request.Prompt, Answer: request.Answer}`,
+		`Kind: symemo.QueryItemAuthoring, ElementID: request.ElementID`,
+		`Kind: symemo.ChangeElementSaveItemQA`,
+		`SaveItemQA: symemo.SaveItemQACommand{ElementID: request.ElementID, ExpectedContentRevision: request.ExpectedContentRevision, Prompt: request.Prompt, Answer: request.Answer}`,
+	} {
+		if !strings.Contains(source, want) {
+			t.Errorf("missing Item transport contract %q", want)
 		}
 	}
 }
@@ -1395,5 +1423,272 @@ func TestChangeElementPartialFailureEnvelopeCarriesChangeContextAndRedactsCause(
 		if strings.Contains(response.Body.String(), forbidden) {
 			t.Fatalf("partial change response leaked %q: %s", forbidden, response.Body.String())
 		}
+	}
+}
+
+func TestItemAlphaCreateAuthorSaveDetailAPITracer(t *testing.T) {
+	previousBooted := symemoIsBooted
+	previousCreate, previousQuery, previousChange := symemoCreateElement, symemoQuery, symemoChangeElement
+	symemoIsBooted = func() bool { return true }
+	elementID := "20260731180000-apitrac"
+	revision := "rev-v1-created"
+	createdPrompt, createdAnswer := "Question\n第二行", "Private answer\n第二行"
+	currentPrompt, currentAnswer := createdPrompt, createdAnswer
+	createCalls, authoringCalls, detailCalls, changeCalls := 0, 0, 0, 0
+	symemoCreateElement = func(_ context.Context, command symemo.CreateElementCommand) (symemo.CreateElementResult, error) {
+		createCalls++
+		if command.Kind != symemo.CreateElementCreateItem || command.CreateItem.ElementID != elementID || command.CreateItem.Prompt != createdPrompt || command.CreateItem.Answer != createdAnswer || command.AddNewTopic != (symemo.AddNewTopicCommand{}) {
+			t.Fatalf("create command = %#v", command)
+		}
+		rank := 7
+		return symemo.CreateElementResult{ElementID: elementID, CreateAccepted: true, ReviewAccepted: false, Item: &symemo.CreatedItemSummary{ElementID: elementID, ProcessingState: "processed", ContentRevision: revision, SortRank: &rank, LifecycleState: "pending"}}, nil
+	}
+	symemoQuery = func(_ context.Context, query symemo.Query) (symemo.QueryResult, error) {
+		switch query.Kind {
+		case symemo.QueryItemAuthoring:
+			authoringCalls++
+			if query.ElementID != elementID {
+				t.Fatalf("authoring query = %#v", query)
+			}
+			return symemo.QueryResult{ItemAuthoring: &symemo.ItemAuthoringView{ElementID: elementID, Prompt: currentPrompt, Answer: currentAnswer, ContentRevision: revision}}, nil
+		case symemo.QueryElement:
+			detailCalls++
+			if query.ElementID != elementID {
+				t.Fatalf("detail query = %#v", query)
+			}
+			return symemo.QueryResult{Element: &symemo.ElementReadView{ElementEnvelope: symemo.ElementEnvelope{Spec: 1, ID: elementID, Type: "item", ProcessingState: "processed", PayloadSpec: 1, Payload: symemo.ElementPayload{Kind: "qa", Prompt: currentPrompt, Answer: currentAnswer, Revision: revision}}}}, nil
+		default:
+			t.Fatalf("unexpected query = %#v", query)
+			return symemo.QueryResult{}, nil
+		}
+	}
+	symemoChangeElement = func(_ context.Context, command symemo.ChangeElementCommand) (symemo.ChangeElementResult, error) {
+		changeCalls++
+		if command.Kind != symemo.ChangeElementSaveItemQA || command.SaveItemQA.ElementID != elementID || command.SaveItemQA.ExpectedContentRevision == "" || command.RenameElement != (symemo.RenameElementCommand{}) || command.SaveTopicHTML != (symemo.SaveTopicHTMLCommand{}) {
+			t.Fatalf("change command = %#v", command)
+		}
+		if command.SaveItemQA.ExpectedContentRevision == "rev-v1-stale" {
+			return symemo.ChangeElementResult{}, &symemo.DomainError{Code: symemo.ErrElementRevisionConflict, ElementID: elementID, ChangedField: symemo.ChangedElementItemQA, CurrentRevision: revision}
+		}
+		currentPrompt, currentAnswer = command.SaveItemQA.Prompt, command.SaveItemQA.Answer
+		revision = "rev-v1-saved"
+		itemQA := &symemo.CanonicalItemQA{Prompt: currentPrompt, Answer: currentAnswer, ContentRevision: revision}
+		return symemo.ChangeElementResult{Kind: symemo.ChangeElementSaveItemQA, ElementID: elementID, ChangedField: symemo.ChangedElementItemQA, Revision: revision, Changed: true, ChangeAccepted: true, ItemQA: itemQA}, nil
+	}
+	t.Cleanup(func() {
+		symemoIsBooted = previousBooted
+		symemoCreateElement, symemoQuery, symemoChangeElement = previousCreate, previousQuery, previousChange
+	})
+
+	created := invokeSymemoHandler(t, createSymemoItem, `{"elementId":"`+elementID+`","prompt":"Question\n第二行","answer":"Private answer\n第二行"}`)
+	createdData := envelopeData(t, created)
+	if envelopeCode(t, created) != 0 || !strings.Contains(string(createdData), `"createAccepted":true`) || !strings.Contains(string(createdData), `"reviewAccepted":false`) || strings.Contains(string(createdData), `"eventId"`) {
+		t.Fatalf("create response = %s", created.Body.String())
+	}
+
+	authoring := invokeSymemoHandler(t, getSymemoItemAuthoring, `{"elementId":"`+elementID+`"}`)
+	var authoringData symemo.ItemAuthoringView
+	if err := json.Unmarshal(envelopeData(t, authoring), &authoringData); err != nil {
+		t.Fatal(err)
+	}
+	if envelopeCode(t, authoring) != 0 || authoringData.Answer != createdAnswer {
+		t.Fatalf("authoring response = %s", authoring.Body.String())
+	}
+
+	saved := invokeSymemoHandler(t, saveSymemoItemQA, `{"elementId":"`+elementID+`","expectedContentRevision":"rev-v1-created","prompt":"Corrected question","answer":"Corrected answer"}`)
+	if envelopeCode(t, saved) != 0 || !strings.Contains(string(envelopeData(t, saved)), `"changedField":"itemQA"`) || !strings.Contains(string(envelopeData(t, saved)), `"changeAccepted":true`) {
+		t.Fatalf("save response = %s", saved.Body.String())
+	}
+
+	conflict := invokeSymemoHandler(t, saveSymemoItemQA, `{"elementId":"`+elementID+`","expectedContentRevision":"rev-v1-stale","prompt":"Stale question","answer":"Stale answer"}`)
+	if envelopeCode(t, conflict) == 0 || !strings.Contains(conflict.Body.String(), `"changedField":"itemQA"`) || !strings.Contains(conflict.Body.String(), `"currentRevision":"rev-v1-saved"`) || strings.Contains(conflict.Body.String(), "Stale answer") {
+		t.Fatalf("conflict response = %s", conflict.Body.String())
+	}
+
+	detail := invokeSymemoHandler(t, getSymemoElement, `{"elementId":"`+elementID+`"}`)
+	if envelopeCode(t, detail) != 0 || strings.Contains(detail.Body.String(), currentAnswer) || strings.Contains(detail.Body.String(), `"answer"`) || !strings.Contains(detail.Body.String(), currentPrompt) {
+		t.Fatalf("detail response = %s", detail.Body.String())
+	}
+	if createCalls != 1 || authoringCalls != 1 || detailCalls != 1 || changeCalls != 2 {
+		t.Fatalf("facade calls create=%d authoring=%d detail=%d change=%d", createCalls, authoringCalls, detailCalls, changeCalls)
+	}
+}
+
+func TestItemAlphaCreateAndSaveRoutesRejectReadOnlyBeforeFacade(t *testing.T) {
+	previousReadOnly := util.ReadOnly
+	previousConf, previousLangs := model.Conf, util.Langs
+	previousCreate, previousChange := symemoCreateElement, symemoChangeElement
+	util.ReadOnly = true
+	model.Conf = &model.AppConf{Lang: "symemo-item-readonly"}
+	util.Langs = map[string]map[int]string{"symemo-item-readonly": {34: "Read-only mode."}, "en": {34: "Read-only mode."}}
+	calls := 0
+	symemoCreateElement = func(context.Context, symemo.CreateElementCommand) (symemo.CreateElementResult, error) {
+		calls++
+		return symemo.CreateElementResult{}, nil
+	}
+	symemoChangeElement = func(context.Context, symemo.ChangeElementCommand) (symemo.ChangeElementResult, error) {
+		calls++
+		return symemo.ChangeElementResult{}, nil
+	}
+	t.Cleanup(func() {
+		util.ReadOnly = previousReadOnly
+		model.Conf, util.Langs = previousConf, previousLangs
+		symemoCreateElement, symemoChangeElement = previousCreate, previousChange
+	})
+
+	for _, request := range []struct {
+		handler gin.HandlerFunc
+		body    string
+	}{
+		{handler: createSymemoItem, body: `{"elementId":"20260731180100-readonl","prompt":"Question","answer":"Answer"}`},
+		{handler: saveSymemoItemQA, body: `{"elementId":"20260731180100-readonl","expectedContentRevision":"rev-v1-current","prompt":"Question","answer":"Answer"}`},
+	} {
+		router := gin.New()
+		router.POST("/", model.CheckReadonly, request.handler)
+		httpRequest := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(request.body))
+		httpRequest.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httpRequest)
+		if envelopeCode(t, response) == 0 {
+			t.Fatalf("read-only route succeeded: %s", response.Body.String())
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("read-only middleware invoked %d Item write facades", calls)
+	}
+}
+
+func TestItemAlphaReadOnlyAuthoringReadRemainsAvailableWithoutAuthorityWrites(t *testing.T) {
+	previousReadOnly := util.ReadOnly
+	previousBooted := symemoIsBooted
+	previousQuery := symemoQuery
+	util.ReadOnly = true
+	symemoIsBooted = func() bool { return true }
+	queryCalls := 0
+	symemoQuery = func(_ context.Context, query symemo.Query) (symemo.QueryResult, error) {
+		queryCalls++
+		if query.Kind != symemo.QueryItemAuthoring {
+			t.Fatalf("unexpected read-only query = %#v", query)
+		}
+		return symemo.QueryResult{ItemAuthoring: &symemo.ItemAuthoringView{
+			ElementID: query.ElementID, Prompt: "Read question", Answer: "Read answer", ContentRevision: "rev-read-only",
+		}}, nil
+	}
+	t.Cleanup(func() {
+		util.ReadOnly = previousReadOnly
+		symemoIsBooted = previousBooted
+		symemoQuery = previousQuery
+	})
+
+	response := invokeSymemoHandler(t, getSymemoItemAuthoring, `{"elementId":"20260731195200-readonl"}`)
+	if envelopeCode(t, response) != 0 || !strings.Contains(response.Body.String(), "Read answer") || queryCalls != 1 {
+		t.Fatalf("read-only authoring response = %s calls=%d", response.Body.String(), queryCalls)
+	}
+}
+
+func TestItemAlphaAcceptedRecoveryTransportMatrix(t *testing.T) {
+	previousBooted := symemoIsBooted
+	previousCreate, previousChange, previousLearning := symemoCreateElement, symemoChangeElement, symemoRunLearningAction
+	symemoIsBooted = func() bool { return true }
+	elementID := "20260731183000-recover"
+	createCalls := 0
+	var retainedCreate symemo.CreateItemCommand
+	symemoCreateElement = func(_ context.Context, command symemo.CreateElementCommand) (symemo.CreateElementResult, error) {
+		createCalls++
+		if createCalls == 1 {
+			retainedCreate = command.CreateItem
+			return symemo.CreateElementResult{ElementID: elementID, CreateAccepted: true}, &symemo.DomainError{
+				Code: symemo.ErrProjectionRefreshFailed, Retryable: true, CreateAccepted: true, ElementID: elementID,
+			}
+		}
+		if command.CreateItem != retainedCreate {
+			t.Fatalf("same-ID retry changed facts: first=%#v retry=%#v", retainedCreate, command.CreateItem)
+		}
+		rank := 9
+		return symemo.CreateElementResult{
+			ElementID: elementID, CreateAccepted: true,
+			Item: &symemo.CreatedItemSummary{ElementID: elementID, ProcessingState: "processed", ContentRevision: "rev-v1-created", SortRank: &rank, LifecycleState: "pending"},
+		}, nil
+	}
+	acceptedChange := symemo.ChangeElementResult{
+		Kind: symemo.ChangeElementSaveItemQA, ElementID: elementID, ChangedField: symemo.ChangedElementItemQA,
+		Revision: "rev-v1-saved", Changed: true, ChangeAccepted: true,
+		ItemQA: &symemo.CanonicalItemQA{Prompt: "Saved question", Answer: "Saved answer", ContentRevision: "rev-v1-saved"},
+	}
+	symemoChangeElement = func(context.Context, symemo.ChangeElementCommand) (symemo.ChangeElementResult, error) {
+		return acceptedChange, &symemo.DomainError{
+			Code: symemo.ErrProjectionRefreshFailed, Retryable: true, ChangeAccepted: true,
+			ElementID: elementID, ChangedField: symemo.ChangedElementItemQA, AcceptedChange: &acceptedChange,
+		}
+	}
+	session := &symemo.SessionState{SessionID: "item-recovery-session", Status: symemo.SessionActive, Stage: symemo.StageOutstanding, Phase: symemo.PhaseAnswer, Current: &symemo.ReviewTarget{Kind: "element.item", ElementID: elementID, Prompt: "Question", Answer: "Answer"}}
+	symemoRunLearningAction = func(_ context.Context, action symemo.LearningAction) (symemo.LearningResult, error) {
+		switch action.EventID {
+		case "20260731183100-queueaa":
+			failed := *session
+			failed.PendingAcceptedEventID = action.EventID
+			return symemo.LearningResult{}, &symemo.DomainError{Code: symemo.ErrQueueAdvanceFailed, Retryable: true, ReviewAccepted: true, AcceptedEventID: action.EventID, Session: &failed}
+		case "20260731183200-projaaa":
+			return symemo.LearningResult{}, &symemo.DomainError{Code: symemo.ErrProjectionRefreshFailed, Retryable: true, ReviewAccepted: true, AcceptedEventID: action.EventID}
+		default:
+			return symemo.LearningResult{}, &symemo.DomainError{Code: symemo.ErrTargetMismatch, Session: session}
+		}
+	}
+	t.Cleanup(func() {
+		symemoIsBooted = previousBooted
+		symemoCreateElement, symemoChangeElement, symemoRunLearningAction = previousCreate, previousChange, previousLearning
+	})
+
+	createBody := `{"elementId":"` + elementID + `","prompt":"Question","answer":"Answer"}`
+	firstCreate := invokeSymemoHandler(t, createSymemoItem, createBody)
+	if envelopeCode(t, firstCreate) != -1 || !strings.Contains(firstCreate.Body.String(), `"createAccepted":true`) ||
+		!strings.Contains(firstCreate.Body.String(), `"retryable":true`) || !strings.Contains(firstCreate.Body.String(), elementID) {
+		t.Fatalf("accepted create failure = %s", firstCreate.Body.String())
+	}
+	secondCreate := invokeSymemoHandler(t, createSymemoItem, createBody)
+	if envelopeCode(t, secondCreate) != 0 || createCalls != 2 {
+		t.Fatalf("same-ID create reconciliation = %s calls=%d", secondCreate.Body.String(), createCalls)
+	}
+
+	save := invokeSymemoHandler(t, saveSymemoItemQA, `{"elementId":"`+elementID+`","expectedContentRevision":"rev-v1-old","prompt":"Saved question","answer":"Saved answer"}`)
+	if envelopeCode(t, save) != -1 || !strings.Contains(save.Body.String(), `"acceptedChange"`) ||
+		strings.Contains(save.Body.String(), `"change":`) || !strings.Contains(save.Body.String(), `"changeAccepted":true`) {
+		t.Fatalf("accepted Item Q/A failure = %s", save.Body.String())
+	}
+
+	queue := invokeSymemoHandler(t, gradeSymemoItem, `{"elementId":"`+elementID+`","eventId":"20260731183100-queueaa","rawGrade":2}`)
+	if envelopeCode(t, queue) != -1 || !strings.Contains(queue.Body.String(), `"reviewAccepted":true`) ||
+		!strings.Contains(queue.Body.String(), `"acceptedEventId":"20260731183100-queueaa"`) ||
+		!strings.Contains(queue.Body.String(), `"pendingAcceptedEventId":"20260731183100-queueaa"`) {
+		t.Fatalf("accepted queue failure = %s", queue.Body.String())
+	}
+
+	projection := invokeSymemoHandler(t, gradeSymemoItem, `{"elementId":"`+elementID+`","eventId":"20260731183200-projaaa","rawGrade":2}`)
+	if envelopeCode(t, projection) != -1 || !strings.Contains(projection.Body.String(), `"reviewAccepted":true`) ||
+		!strings.Contains(projection.Body.String(), `"acceptedEventId":"20260731183200-projaaa"`) {
+		t.Fatalf("accepted projection failure = %s", projection.Body.String())
+	}
+
+	stale := invokeSymemoHandler(t, gradeSymemoItem, `{"elementId":"other-item","eventId":"20260731183300-staleaa","rawGrade":4}`)
+	if envelopeCode(t, stale) != -1 || !strings.Contains(stale.Body.String(), `"errorCode":"target-mismatch"`) ||
+		strings.Contains(stale.Body.String(), `"reviewAccepted":true`) {
+		t.Fatalf("stale target failure = %s", stale.Body.String())
+	}
+}
+
+func TestItemAlphaSameIDDifferentFactsRemainNotAccepted(t *testing.T) {
+	previousBooted, previousCreate := symemoIsBooted, symemoCreateElement
+	symemoIsBooted = func() bool { return true }
+	symemoCreateElement = func(_ context.Context, command symemo.CreateElementCommand) (symemo.CreateElementResult, error) {
+		return symemo.CreateElementResult{ElementID: command.CreateItem.ElementID}, &symemo.DomainError{
+			Code: symemo.ErrInvalidCreateCommand, ElementID: command.CreateItem.ElementID, CreateAccepted: false,
+		}
+	}
+	t.Cleanup(func() { symemoIsBooted, symemoCreateElement = previousBooted, previousCreate })
+
+	response := invokeSymemoHandler(t, createSymemoItem, `{"elementId":"20260731183400-diffaaa","prompt":"Different","answer":"Facts"}`)
+	if envelopeCode(t, response) != -1 || strings.Contains(response.Body.String(), `"createAccepted":true`) ||
+		!strings.Contains(response.Body.String(), `"errorCode":"invalid-create-command"`) {
+		t.Fatalf("different-facts create rejection = %s", response.Body.String())
 	}
 }

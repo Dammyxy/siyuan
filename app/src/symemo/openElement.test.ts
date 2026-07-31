@@ -271,6 +271,32 @@ describe("ordinary Element opening", () => {
         }, intent: "ordinary"}]);
     });
 
+    it("keeps Item Q/A, session, event, and grade facts out of native layout identity", async () => {
+        const fixture = createHost();
+        const withDisposableFacts = {
+            ...options({elementId: "item-id", title: "Derived question", type: "item"}),
+            prompt: "Private question",
+            answer: "Private answer",
+            contentRevision: "rev-item",
+            sessionId: "mixed-session",
+            eventId: "grade-event",
+            rawGrade: 2,
+        } as OpenElementOptions;
+
+        await openElementWithHost(withDisposableFacts, fixture.host);
+
+        assert.deepEqual(fixture.created, [{
+            identity: {
+                instance: "SymemoElement",
+                elementId: "item-id",
+                title: "Derived question",
+                icon: "iconRiffCard",
+            },
+            intent: "ordinary",
+        }]);
+        assert.deepEqual(Object.keys(fixture.created[0].identity).sort(), ["elementId", "icon", "instance", "title"]);
+    });
+
     it("focuses a live same-ID match instead of creating a duplicate", async () => {
         const fixture = createHost();
         const existing = {elementId: "topic-id"};
@@ -433,6 +459,27 @@ describe("native Element host", () => {
 
         assert.deepEqual(wnd.removed, [reusable.id]);
         assert.equal(wnd.children.includes(updated), true);
+    });
+
+    it("replaces a mixed current target in the same native Wnd with only the returned Element identity", async () => {
+        const wnd = attachWnd(new TestWnd());
+        const topic = addExistingTab(wnd, new TestElementTab("topic-current"));
+        topic.headElement?.classList.add("item--unupdate", "item--focus");
+        const itemIdentity: SymemoElementLayoutData = {
+            instance: "SymemoElement",
+            elementId: "item-current",
+            title: "Item question",
+            icon: "iconRiffCard",
+        };
+
+        const result = await createNativeHost({} as App).createTab(itemIdentity, "current");
+
+        assert.ok(result?.tab);
+        assert.equal(result?.tab?.parent, wnd as unknown as import("../layout/Wnd").Wnd);
+        assert.equal(result?.elementId, "item-current");
+        assert.equal((result?.tab?.model as unknown as TestElementTab).elementId, "item-current");
+        assert.deepEqual(wnd.removed, [topic.id]);
+        assert.equal(wnd.children.length, 1);
     });
 
     it("delegates each new tab to Wnd.addTab so the host retains tab-cap enforcement", async () => {

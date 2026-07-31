@@ -114,7 +114,7 @@ func TestProjectionImplementationsPreserveReadAndRecoverySemantics(t *testing.T)
 	t.Cleanup(func() { _ = engine.Close() })
 
 	baseline := projectionRecoveryContractJSON(t, engine, absentElementID, unsureElementID)
-	if got, want := fmt.Sprintf("%x", sha256.Sum256(baseline)), "01cecfef9735ccca8e32a6654e811b450a307fa0efd6d5bbd4c3536ec26a5768"; got != want {
+	if got, want := fmt.Sprintf("%x", sha256.Sum256(baseline)), "a57ca39fceaba21afb1b911e129c02324ddcc2f3bef75eed9ee120e453ab26d6"; got != want {
 		t.Fatalf("projection recovery contract digest = %s, want %s", got, want)
 	}
 	assertProjectionRecoveryContract(t, engine, absentElementID, unsureElementID)

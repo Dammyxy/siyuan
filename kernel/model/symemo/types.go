@@ -77,6 +77,7 @@ type ElementPayload struct {
 	Kind     string          `json:"kind,omitempty"`
 	Prompt   string          `json:"prompt,omitempty"`
 	Answer   string          `json:"answer,omitempty"`
+	Revision string          `json:"revision,omitempty"`
 	Material *TopicMaterial  `json:"material,omitempty"`
 	Raw      json.RawMessage `json:"-"`
 }
@@ -95,11 +96,38 @@ func (payload *ElementPayload) UnmarshalJSON(data []byte) error {
 }
 
 func (payload ElementPayload) MarshalJSON() ([]byte, error) {
-	if payload.Kind == "" && payload.Prompt == "" && payload.Answer == "" && payload.Material == nil && len(payload.Raw) > 0 {
+	if payload.Kind == "" && payload.Prompt == "" && payload.Answer == "" && payload.Revision == "" && payload.Material == nil && len(payload.Raw) > 0 {
 		return payload.Raw, nil
 	}
-	type payloadAlias ElementPayload
-	return json.Marshal(payloadAlias(payload))
+	object := map[string]json.RawMessage{}
+	if len(payload.Raw) > 0 {
+		if err := json.Unmarshal(payload.Raw, &object); err != nil {
+			return nil, err
+		}
+	}
+	for _, field := range []string{"kind", "prompt", "answer", "revision", "material"} {
+		delete(object, field)
+	}
+	for field, value := range map[string]any{
+		"kind": payload.Kind, "prompt": payload.Prompt, "answer": payload.Answer, "revision": payload.Revision,
+	} {
+		if value == "" {
+			continue
+		}
+		data, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
+		object[field] = data
+	}
+	if payload.Material != nil {
+		data, err := json.Marshal(payload.Material)
+		if err != nil {
+			return nil, err
+		}
+		object["material"] = data
+	}
+	return json.Marshal(object)
 }
 
 type TopicMaterial struct {
@@ -541,6 +569,7 @@ const (
 	QueryCurrentSession           QueryKind = "GetCurrentLearningSession"
 	QueryElementTree              QueryKind = "GetElementTree"
 	QueryElement                  QueryKind = "GetElement"
+	QueryItemAuthoring            QueryKind = "GetItemAuthoring"
 	QueryElementSourceDiagnostics QueryKind = "GetElementSourceDiagnostics"
 )
 
@@ -554,12 +583,20 @@ type Query struct {
 }
 
 type QueryResult struct {
-	Subset      string                    `json:"subset,omitempty"`
-	Items       []ReviewTargetSummary     `json:"items,omitempty"`
-	Session     *SessionState             `json:"session,omitempty"`
-	Nodes       []ElementTreeNode         `json:"nodes,omitempty"`
-	Element     *ElementReadView          `json:"element,omitempty"`
-	Diagnostics []ElementSourceDiagnostic `json:"diagnostics,omitempty"`
+	Subset        string                    `json:"subset,omitempty"`
+	Items         []ReviewTargetSummary     `json:"items,omitempty"`
+	Session       *SessionState             `json:"session,omitempty"`
+	Nodes         []ElementTreeNode         `json:"nodes,omitempty"`
+	Element       *ElementReadView          `json:"element,omitempty"`
+	ItemAuthoring *ItemAuthoringView        `json:"itemAuthoring,omitempty"`
+	Diagnostics   []ElementSourceDiagnostic `json:"diagnostics,omitempty"`
+}
+
+type ItemAuthoringView struct {
+	ElementID       string `json:"elementId"`
+	Prompt          string `json:"prompt"`
+	Answer          string `json:"answer"`
+	ContentRevision string `json:"contentRevision"`
 }
 
 type LearningResult struct {
@@ -580,6 +617,7 @@ type CreateElementKind string
 
 const (
 	CreateElementAddNewTopic CreateElementKind = "AddNewTopic"
+	CreateElementCreateItem  CreateElementKind = "CreateItem"
 )
 
 type AddNewTopicCommand struct {
@@ -587,9 +625,16 @@ type AddNewTopicCommand struct {
 	HTML  string `json:"html"`
 }
 
+type CreateItemCommand struct {
+	ElementID string `json:"elementId"`
+	Prompt    string `json:"prompt"`
+	Answer    string `json:"answer"`
+}
+
 type CreateElementCommand struct {
 	Kind        CreateElementKind  `json:"kind"`
 	AddNewTopic AddNewTopicCommand `json:"addNewTopic,omitempty"`
+	CreateItem  CreateItemCommand  `json:"createItem,omitempty"`
 }
 
 type SendToNoteCommand struct{ Kind string }
@@ -599,6 +644,7 @@ type ChangeElementKind string
 const (
 	ChangeElementRenameElement ChangeElementKind = "RenameElement"
 	ChangeElementSaveTopicHTML ChangeElementKind = "SaveTopicHTML"
+	ChangeElementSaveItemQA    ChangeElementKind = "SaveItemQA"
 )
 
 type RenameElementCommand struct {
@@ -613,10 +659,18 @@ type SaveTopicHTMLCommand struct {
 	HTML                     string `json:"html"`
 }
 
+type SaveItemQACommand struct {
+	ElementID               string `json:"elementId"`
+	ExpectedContentRevision string `json:"expectedContentRevision"`
+	Prompt                  string `json:"prompt"`
+	Answer                  string `json:"answer"`
+}
+
 type ChangeElementCommand struct {
 	Kind          ChangeElementKind    `json:"kind"`
 	RenameElement RenameElementCommand `json:"renameElement,omitempty"`
 	SaveTopicHTML SaveTopicHTMLCommand `json:"saveTopicHTML,omitempty"`
+	SaveItemQA    SaveItemQACommand    `json:"saveItemQA,omitempty"`
 }
 
 type ChangedElementField string
@@ -624,6 +678,7 @@ type ChangedElementField string
 const (
 	ChangedElementTitle    ChangedElementField = "title"
 	ChangedElementMaterial ChangedElementField = "material"
+	ChangedElementItemQA   ChangedElementField = "itemQA"
 )
 
 type MaterialNodeIdentityAssignment struct {
@@ -648,6 +703,15 @@ type CreatedTopicSummary struct {
 	DueAt                 *time.Time `json:"dueAt,omitempty"`
 }
 
+type CreatedItemSummary struct {
+	ElementID       string `json:"elementId"`
+	ProcessingState string `json:"processingState"`
+	ContentRevision string `json:"contentRevision"`
+	SourcePath      string `json:"sourcePath,omitempty"`
+	SortRank        *int   `json:"sortRank,omitempty"`
+	LifecycleState  string `json:"lifecycleState"`
+}
+
 type CreateElementResult struct {
 	ElementID      string               `json:"elementId,omitempty"`
 	EventID        string               `json:"eventId,omitempty"`
@@ -655,6 +719,13 @@ type CreateElementResult struct {
 	ReviewAccepted bool                 `json:"reviewAccepted"`
 	Retryable      bool                 `json:"retryable"`
 	Topic          *CreatedTopicSummary `json:"topic,omitempty"`
+	Item           *CreatedItemSummary  `json:"item,omitempty"`
+}
+
+type CanonicalItemQA struct {
+	Prompt          string `json:"prompt"`
+	Answer          string `json:"answer"`
+	ContentRevision string `json:"contentRevision"`
 }
 
 type ChangeElementResult struct {
@@ -667,5 +738,6 @@ type ChangeElementResult struct {
 	NodeIdentityAssignments []MaterialNodeIdentityAssignment `json:"nodeIdentityAssignments,omitempty"`
 	Changed                 bool                             `json:"changed"`
 	ChangeAccepted          bool                             `json:"changeAccepted"`
+	ItemQA                  *CanonicalItemQA                 `json:"itemQA,omitempty"`
 }
 type SendToNoteResult struct{}

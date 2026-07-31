@@ -836,7 +836,7 @@ func childElementSourceIssue(element Element) (code, reason string, err error) {
 		if element.PayloadSpec != SupportedPayloadSpec || element.Payload.Kind != "qa" {
 			return sourcePayloadCode, "Element source is not a supported Q/A Item.", ErrUnavailableSource
 		}
-		if element.Payload.Prompt == "" || element.Payload.Answer == "" {
+		if strings.TrimSpace(element.Payload.Prompt) == "" || strings.TrimSpace(element.Payload.Answer) == "" {
 			return sourceIncompleteCode, "Element source is incomplete.", ErrUnavailableSource
 		}
 	case "topic":

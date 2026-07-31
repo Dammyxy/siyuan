@@ -18,15 +18,70 @@ package symemo
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
 
+func TestItemAlphaClosedContractFields(t *testing.T) {
+	tests := []struct {
+		owner     any
+		field     string
+		jsonName  string
+		typeName  string
+		pointerTo bool
+	}{
+		{owner: ElementPayload{}, field: "Revision", jsonName: "revision,omitempty", typeName: "string"},
+		{owner: CreateElementCommand{}, field: "CreateItem", jsonName: "createItem,omitempty", typeName: "CreateItemCommand"},
+		{owner: CreateElementResult{}, field: "Item", jsonName: "item,omitempty", typeName: "CreatedItemSummary", pointerTo: true},
+		{owner: QueryResult{}, field: "ItemAuthoring", jsonName: "itemAuthoring,omitempty", typeName: "ItemAuthoringView", pointerTo: true},
+		{owner: ChangeElementCommand{}, field: "SaveItemQA", jsonName: "saveItemQA,omitempty", typeName: "SaveItemQACommand"},
+		{owner: ChangeElementResult{}, field: "ItemQA", jsonName: "itemQA,omitempty", typeName: "CanonicalItemQA", pointerTo: true},
+	}
+	for _, test := range tests {
+		t.Run(reflect.TypeOf(test.owner).Name()+"."+test.field, func(t *testing.T) {
+			field, ok := reflect.TypeOf(test.owner).FieldByName(test.field)
+			if !ok {
+				t.Fatalf("missing field %s", test.field)
+			}
+			if got := field.Tag.Get("json"); got != test.jsonName {
+				t.Fatalf("json tag = %q, want %q", got, test.jsonName)
+			}
+			fieldType := field.Type
+			if test.pointerTo {
+				if fieldType.Kind() != reflect.Pointer {
+					t.Fatalf("field type = %s, want pointer", fieldType)
+				}
+				fieldType = fieldType.Elem()
+			}
+			if fieldType.Name() != test.typeName {
+				t.Fatalf("field type = %s, want %s", fieldType, test.typeName)
+			}
+		})
+	}
+}
+
+func TestCreateItemRejectsAnotherPopulatedCreateVariant(t *testing.T) {
+	engine, _ := newFixtureEngine(t)
+	var command CreateElementCommand
+	if err := json.Unmarshal([]byte(`{
+		"kind":"CreateItem",
+		"createItem":{"elementId":"20260731120000-abcdefg","prompt":"Question","answer":"Answer"},
+		"addNewTopic":{"title":"Topic","html":"<p>Body</p>"}
+	}`), &command); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.CreateElement(t.Context(), command); !hasCode(err, ErrInvalidCreateCommand) {
+		t.Fatalf("mixed CreateItem error = %v", err)
+	}
+}
+
 func TestEngineContractClosedVariants(t *testing.T) {
 	engine, _ := newFixtureEngine(t)
-	if _, err := engine.CreateElement(context.Background(), CreateElementCommand{Kind: "CreateItem"}); !hasCode(err, ErrUnsupportedOperation) {
+	if _, err := engine.CreateElement(context.Background(), CreateElementCommand{Kind: CreateElementCreateItem}); !hasCode(err, ErrInvalidCreateCommand) {
 		t.Fatalf("CreateElement error = %v", err)
 	}
 	if _, err := engine.ChangeElement(context.Background(), ChangeElementCommand{Kind: "UnsupportedChange"}); !hasCode(err, ErrInvalidChangeCommand) {

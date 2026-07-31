@@ -20,6 +20,12 @@ export interface TopicMaterialView {
     revision?: string;
 }
 
+export interface ItemDetailView {
+    kind: "qa";
+    prompt: string;
+    revision: string;
+}
+
 export interface ElementDetailView {
     elementId: string;
     rootElementId?: string;
@@ -30,6 +36,7 @@ export interface ElementDetailView {
     sourceMode: ElementSourceMode;
     supportStatus: ElementSupportStatus;
     topicMaterial?: TopicMaterialView;
+    item?: ItemDetailView;
 }
 
 export type ElementReadFailureKind = "request" | "response";
@@ -48,10 +55,19 @@ export type LearningSessionStage = "outstanding" | "pending" | "finalDrill" | "c
 
 export type LearningSessionPhase = "question" | "answer" | "confirmation" | "completed";
 
-export interface ActiveLearningTargetRef {
-    kind: string;
+export interface ActiveTopicLearningTarget {
+    kind: "element.topic";
     elementId: string;
 }
+
+export interface ActiveItemLearningTarget {
+    kind: "element.item";
+    elementId: string;
+    prompt: string;
+    answer?: string;
+}
+
+export type ActiveLearningTargetRef = ActiveTopicLearningTarget | ActiveItemLearningTarget;
 
 export interface LearningSessionProjection {
     sessionId?: string;
@@ -61,6 +77,7 @@ export interface LearningSessionProjection {
     current?: ActiveLearningTargetRef;
     remainingElementIds: string[];
     pendingAcceptedEventId?: string;
+    confirmation?: {stage: "pending" | "finalDrill"};
 }
 
 export interface SessionCallFailure {
@@ -110,8 +127,13 @@ export type LearningControlPhase =
     | "idle"
     | "preview"
     | "activeTopic"
+    | "activeItemQuestion"
+    | "activeItemAnswer"
+    | "pendingConfirmation"
+    | "finalDrillConfirmation"
     | "busy"
     | "retryableNext"
+    | "retryableReview"
     | "acceptedNotAdvanced"
     | "acceptedRecovering"
     | "completed"
@@ -120,7 +142,15 @@ export type LearningControlPhase =
     | "readOnly"
     | "failure";
 
-export type LearningPrimaryAction = "learn" | "next" | "retryNext" | "continue" | "resume";
+export type LearningPrimaryAction =
+    | "learn"
+    | "next"
+    | "showAnswer"
+    | "acceptPending"
+    | "declineFinalDrill"
+    | "retryNext"
+    | "continue"
+    | "resume";
 
 export interface LearningControlProjection {
     phase: LearningControlPhase;
@@ -129,6 +159,8 @@ export interface LearningControlProjection {
     busy: boolean;
     messageKey?: string;
     displayedElementId: string;
+    targetElementId?: string;
+    session?: LearningSessionProjection;
 }
 
 export interface ElementReadClient {
@@ -159,6 +191,38 @@ export interface CreateHTMLTopicFailure {
 
 export type CreateHTMLTopicResult = CreateHTMLTopicSuccess | CreateHTMLTopicFailure;
 
+export interface CreatedItemView {
+    elementId: string;
+    processingState: "processed";
+    contentRevision: string;
+    sourcePath?: string;
+    sortRank?: number;
+    lifecycleState: "pending";
+}
+
+export interface CreateItemFailure {
+    errorCode: string;
+    retryable: boolean;
+    acceptance: "notAccepted" | "accepted" | "unknown";
+    acceptedElementId?: string;
+    kind: "request" | "response" | "domain";
+}
+
+export type CreateItemResult =
+    | {ok: true; item: CreatedItemView}
+    | {ok: false; failure: CreateItemFailure};
+
+export interface ItemAuthoringView {
+    elementId: string;
+    prompt: string;
+    answer: string;
+    contentRevision: string;
+}
+
+export type ItemAuthoringResult =
+    | {ok: true; authoring: ItemAuthoringView}
+    | {ok: false; failure: {errorCode: string; retryable: boolean; kind: "request" | "response" | "domain"}};
+
 export interface MaterialNodeIdentityAssignment {
     clientNodeKey: string;
     nodeId: string;
@@ -184,6 +248,44 @@ export type ElementChangeFailure =
 export type ElementChangeResult =
     | {ok: true; change: AcceptedElementChange}
     | {ok: false; failure: ElementChangeFailure};
+
+export interface CanonicalItemQA {
+    prompt: string;
+    answer: string;
+    contentRevision: string;
+}
+
+export interface AcceptedItemQAChange {
+    kind: "SaveItemQA";
+    elementId: string;
+    changedField: "itemQA";
+    revision: string;
+    itemQA: CanonicalItemQA;
+    changed: boolean;
+    changeAccepted: true;
+}
+
+export type ItemQAChangeFailure =
+    | {kind: "conflict"; elementId: string; changedField: "itemQA"; currentRevision: string}
+    | {kind: "acceptedRecovering"; change: AcceptedItemQAChange}
+    | {kind: "failed"; errorCode: string; retryable: boolean; acceptanceUnknown: boolean};
+
+export type ItemQAChangeResult =
+    | {ok: true; change: AcceptedItemQAChange}
+    | {ok: false; failure: ItemQAChangeFailure};
+
+export interface FormalReviewCallFailure {
+    errorCode: string;
+    retryable: boolean;
+    acceptance: "notAccepted" | "accepted" | "unknown";
+    acceptedEventId?: string;
+    session?: LearningSessionProjection;
+    kind: "request" | "response" | "domain";
+}
+
+export type ItemGradeCallResult =
+    | {ok: true; eventId: string; rawGrade: 0 | 1 | 2 | 3 | 4 | 5; reviewAccepted: true; session: LearningSessionProjection}
+    | {ok: false; failure: FormalReviewCallFailure};
 
 export type AuthoringFieldState =
     | "clean"
@@ -277,6 +379,7 @@ export type RendererUnavailableReason =
 
 export type RenderDecision =
     | {kind: "renderedTopic"; html: string}
+    | {kind: "itemAuthoring"}
     | {kind: "rendererUnavailable"; reason: RendererUnavailableReason};
 
 export type ElementsDockPhase =
@@ -339,6 +442,7 @@ export type SymemoElement = SymemoElementLayoutData;
 export type ElementTabState =
     | {phase: "loading"}
     | {phase: "renderedTopic"; detail: ElementDetailView; html: string}
+    | {phase: "itemAuthoring"; detail: ElementDetailView}
     | {phase: "rendererUnavailable"; detail: ElementDetailView; reason: RendererUnavailableReason}
     | {phase: "missing"}
     | {phase: "failure"; errorKind: ElementReadFailureKind};

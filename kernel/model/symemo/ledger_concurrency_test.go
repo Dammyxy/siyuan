@@ -1098,6 +1098,21 @@ func TestLedgerConcurrentSupersededPendingLowGradeDoesNotAdmitFinalDrill(t *test
 	}
 }
 
+func TestLedgerConcurrentItemDiscoveryOrderRetainsCompleteAcceptedBranch(t *testing.T) {
+	root, low := acceptedReviewAt(t, time.Date(2026, 7, 19, 9, 0, 0, 0, time.UTC), 4, "item-discovery-root")
+	_, high := acceptedReviewAt(t, time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC), 2, "item-discovery-high")
+	for _, events := range [][]SchedulingEvent{{root, low, high}, {root, high, low}} {
+		projections, _, diagnostics := projectSchedulingTruth(events, "2026-07-19")
+		projection := projections[fixtureElementID]
+		if projection.AdoptedTerminalID != high.EventID {
+			t.Fatalf("discovery order adopted terminal = %q, want %q", projection.AdoptedTerminalID, high.EventID)
+		}
+		if diagnostic := diagnosticByID(diagnostics, low.EventID); diagnostic.Classification != "concurrent-superseded" {
+			t.Fatalf("low branch diagnostic = %#v", diagnostic)
+		}
+	}
+}
+
 func TestLedgerDuplicateLowGradeDoesNotAdmitFinalDrill(t *testing.T) {
 	root, low := acceptedReviewAt(t, time.Date(2026, time.July, 19, 9, 0, 0, 0, time.UTC), 2, "duplicate-low")
 	projections, drillProjections, diagnostics := projectSchedulingTruth([]SchedulingEvent{root, low, low}, "2026-07-19")

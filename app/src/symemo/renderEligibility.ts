@@ -6,6 +6,10 @@ export const getRenderDecision = (detail: ElementDetailView): RenderDecision => 
     if (detail.supportStatus !== "supported") {
         return {kind: "rendererUnavailable", reason: "unsupportedRead"};
     }
+    if (detail.type === "item" && detail.sourceMode === "opaque" && detail.item?.kind === "qa" &&
+        detail.item.prompt.trim().length > 0 && detail.item.revision.trim().length > 0) {
+        return {kind: "itemAuthoring"};
+    }
     if (detail.type !== "topic") {
         return {kind: "rendererUnavailable", reason: "unsupportedElementType"};
     }

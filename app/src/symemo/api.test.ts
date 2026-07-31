@@ -23,12 +23,19 @@ const originalFetchModule = require.cache[fetchModulePath];
 let getElement: typeof import("./api").getElement;
 let getElementTree: typeof import("./api").getElementTree;
 let createHTMLTopic: typeof import("./api").createHTMLTopic;
+let createItem: (...args: any[]) => Promise<any>;
+let getItemAuthoring: (...args: any[]) => Promise<any>;
 let renameElement: typeof import("./api").renameElement;
+let saveItemQA: (...args: any[]) => Promise<any>;
 let saveTopicHTML: typeof import("./api").saveTopicHTML;
 let getCurrentLearningSession: typeof import("./api").getCurrentLearningSession;
 let startLearning: typeof import("./api").startLearning;
 let stopLearning: typeof import("./api").stopLearning;
 let nextTopic: typeof import("./api").nextTopic;
+let showAnswer: (...args: any[]) => Promise<any>;
+let gradeItem: (...args: any[]) => Promise<any>;
+let acceptLearningStage: (...args: any[]) => Promise<any>;
+let declineLearningStage: (...args: any[]) => Promise<any>;
 let calls: FetchCall[] = [];
 let nextEnvelope: RawFixtureEnvelope<unknown>;
 let nextError: unknown;
@@ -43,6 +50,7 @@ before(async () => {
             },
         },
     } as NodeModule;
+    const apiModule = await import("./api");
     ({
         createHTMLTopic,
         getCurrentLearningSession,
@@ -53,7 +61,14 @@ before(async () => {
         nextTopic,
         startLearning,
         stopLearning,
-    } = await import("./api"));
+    } = apiModule);
+    createItem = (apiModule as any).createItem;
+    getItemAuthoring = (apiModule as any).getItemAuthoring;
+    saveItemQA = (apiModule as any).saveItemQA;
+    showAnswer = (apiModule as any).showAnswer;
+    gradeItem = (apiModule as any).gradeItem;
+    acceptLearningStage = (apiModule as any).acceptLearningStage;
+    declineLearningStage = (apiModule as any).declineLearningStage;
 });
 
 const installFetchResponse = (envelope: RawFixtureEnvelope<unknown>) => {
@@ -185,8 +200,16 @@ describe("getElement", () => {
         }
     });
 
-    it("projects no Item prompt, answer, schedule, relation, source, material, or opaque payload", async () => {
-        installFetchResponse(buildDetailEnvelope(buildItem()));
+    it("projects only the answer-redacted Item summary needed by content surfaces", async () => {
+        installFetchResponse(buildDetailEnvelope(buildItem({
+            sourceMode: "opaque",
+            payloadSpec: 1,
+            payload: {
+                kind: "qa",
+                prompt: "Question-safe prompt",
+                revision: "rev-v1-item-fixture",
+            },
+        })));
 
         const result = await getElement(FIXTURE_ELEMENT_IDS.item);
 
@@ -202,10 +225,15 @@ describe("getElement", () => {
             title: "Recall Item",
             sourceMode: "opaque",
             supportStatus: "supported",
+            item: {
+                kind: "qa",
+                prompt: "Question-safe prompt",
+                revision: "rev-v1-item-fixture",
+            },
         });
         const projected = JSON.stringify(result.element);
         for (const forbidden of [
-            "prompt", "answer", "schedule", "relation", "sourcePath", "block", "payload", "material",
+            "answer", "schedule", "relation", "sourcePath", "block", "payload", "material",
         ]) {
             assert.equal(projected.includes(forbidden), false, forbidden);
         }
@@ -215,6 +243,177 @@ describe("getElement", () => {
         installFetchResponse(buildRawEnvelope({element: buildSupportedTopic()}));
 
         assert.deepEqual(await getElement(FIXTURE_ELEMENT_IDS.supportedTopic), {ok: false, kind: "response"});
+    });
+});
+
+describe("Item authoring transport clients", () => {
+    const elementId = FIXTURE_ELEMENT_IDS.item;
+
+    it("creates one Item through the exact named route and validates the strict content-only success", async () => {
+        installFetchResponse(buildRawEnvelope({
+            elementId,
+            createAccepted: true,
+            reviewAccepted: false,
+            retryable: false,
+            item: {
+                elementId,
+                processingState: "processed",
+                contentRevision: "rev-v1-created",
+                sourcePath: `${elementId}.sme`,
+                sortRank: 42,
+                lifecycleState: "pending",
+            },
+        }));
+
+        assert.deepEqual(await createItem(elementId, "Question", "Answer"), {
+            ok: true,
+            item: {
+                elementId,
+                processingState: "processed",
+                contentRevision: "rev-v1-created",
+                sourcePath: `${elementId}.sme`,
+                sortRank: 42,
+                lifecycleState: "pending",
+            },
+        });
+        assert.deepEqual(calls, [{
+            url: "/api/symemo/createItem",
+            data: {elementId, prompt: "Question", answer: "Answer"},
+        }]);
+
+        installFetchResponse(buildRawEnvelope({
+            elementId,
+            eventId: "forbidden-event",
+            createAccepted: true,
+            reviewAccepted: false,
+            retryable: false,
+            item: {
+                elementId,
+                processingState: "processed",
+                contentRevision: "rev-v1-created",
+                lifecycleState: "pending",
+            },
+        }));
+        assert.deepEqual(await createItem(elementId, "Question", "Answer"), {
+            ok: false,
+            failure: {
+                errorCode: "response",
+                retryable: true,
+                acceptance: "unknown",
+                kind: "response",
+            },
+        });
+    });
+
+    it("loads complete Q/A only through the explicit authoring route", async () => {
+        installFetchResponse(buildRawEnvelope({
+            elementId,
+            prompt: "Question",
+            answer: "Answer",
+            contentRevision: "rev-v1-current",
+        }));
+
+        assert.deepEqual(await getItemAuthoring(elementId), {
+            ok: true,
+            authoring: {
+                elementId,
+                prompt: "Question",
+                answer: "Answer",
+                contentRevision: "rev-v1-current",
+            },
+        });
+        assert.deepEqual(calls, [{url: "/api/symemo/getItemAuthoring", data: {elementId}}]);
+
+        installFetchResponse(buildRawEnvelope({
+            elementId: FIXTURE_ELEMENT_IDS.supportedTopic,
+            prompt: "Question",
+            answer: "Answer",
+            contentRevision: "rev-v1-current",
+        }));
+        assert.equal((await getItemAuthoring(elementId)).ok, false);
+    });
+
+    it("decodes aggregate Item Q/A saves without packing the pair into canonicalValue", async () => {
+        installFetchResponse(buildRawEnvelope({
+            kind: "SaveItemQA",
+            elementId,
+            changedField: "itemQA",
+            revision: "rev-v1-next",
+            itemQA: {
+                prompt: "Corrected question",
+                answer: "Corrected answer",
+                contentRevision: "rev-v1-next",
+            },
+            changed: true,
+            changeAccepted: true,
+        }));
+
+        const result = await saveItemQA(
+            elementId,
+            "rev-v1-current",
+            "Corrected question",
+            "Corrected answer",
+        );
+        assert.equal(result.ok, true);
+        assert.deepEqual(calls, [{
+            url: "/api/symemo/saveItemQA",
+            data: {
+                elementId,
+                expectedContentRevision: "rev-v1-current",
+                prompt: "Corrected question",
+                answer: "Corrected answer",
+            },
+        }]);
+        assert.equal(JSON.stringify(result).includes("canonicalValue"), false);
+    });
+
+    it("distinguishes Item conflicts, accepted recovery, and malformed successes", async () => {
+        installFetchResponse(buildRawEnvelope({
+            errorCode: "element-revision-conflict",
+            retryable: false,
+            changeAccepted: false,
+            elementId,
+            changedField: "itemQA",
+            currentRevision: "rev-v1-current",
+        }, {code: -1, msg: "conflict"}));
+        assert.deepEqual(await saveItemQA(elementId, "stale", "Question", "Answer"), {
+            ok: false,
+            failure: {
+                kind: "conflict",
+                elementId,
+                changedField: "itemQA",
+                currentRevision: "rev-v1-current",
+            },
+        });
+
+        installFetchResponse(buildRawEnvelope({
+            errorCode: "projection-refresh-failed",
+            retryable: true,
+            changeAccepted: true,
+            acceptedChange: {
+                kind: "SaveItemQA",
+                elementId,
+                changedField: "itemQA",
+                revision: "rev-v1-next",
+                itemQA: {prompt: "Question", answer: "Answer", contentRevision: "rev-v1-next"},
+                changed: true,
+                changeAccepted: true,
+            },
+        }, {code: -1, msg: "accepted"}));
+        const recovering = await saveItemQA(elementId, "rev-v1-current", "Question", "Answer");
+        assert.equal(recovering.ok, false);
+        if (!recovering.ok) assert.equal(recovering.failure.kind, "acceptedRecovering");
+
+        installFetchResponse(buildRawEnvelope({
+            kind: "SaveItemQA",
+            elementId,
+            changedField: "itemQA",
+            revision: "rev-v1-next",
+            itemQA: {prompt: "Question", answer: "Answer", contentRevision: "different"},
+            changed: false,
+            changeAccepted: true,
+        }));
+        assert.equal((await saveItemQA(elementId, "rev-v1-current", "Question", "Answer")).ok, false);
     });
 });
 
@@ -512,7 +711,7 @@ describe("Topic Next transport client", () => {
         stage: "outstanding",
         phase: "question",
         current: {kind: "element.topic", elementId: FIXTURE_ELEMENT_IDS.futureChild},
-        remainingElementIds: [],
+        remainingElementIds: [] as string[],
     };
 
     it("posts the exact Topic identity and accepts only a matching durable success", async () => {
@@ -716,5 +915,156 @@ describe("failure classification and atomic validation", () => {
         assert.deepEqual([...new Set(calls.map((call) => call.url))].sort(), [
             "/api/symemo/getElement", "/api/symemo/getElementTree",
         ]);
+    });
+});
+
+describe("Item Alpha learning transport", () => {
+    const questionSession = {
+        sessionId: "session-item-alpha",
+        status: "active",
+        stage: "outstanding",
+        phase: "question",
+        current: {kind: "element.item", elementId: "item-alpha", prompt: "Question\nline two"},
+        remainingElementIds: [] as string[],
+    };
+    const answerSession = {
+        ...questionSession,
+        phase: "answer",
+        current: {...questionSession.current, answer: "Answer\nline two"},
+    };
+
+    it("rejects any answer key in a question snapshot and requires it in the answer phase", async () => {
+        installFetchResponse(buildRawEnvelope({
+            ...questionSession,
+            current: {...questionSession.current, answer: "leak"},
+        }));
+        assert.equal((await startLearning()).ok, false);
+
+        installFetchResponse(buildRawEnvelope({...answerSession, current: {...questionSession.current}}));
+        assert.equal((await startLearning()).ok, false);
+    });
+
+    it("uses strict named Show Answer and stage operations", async () => {
+        assert.equal(typeof showAnswer, "function");
+        assert.equal(typeof acceptLearningStage, "function");
+        assert.equal(typeof declineLearningStage, "function");
+
+        installFetchResponse(buildRawEnvelope(answerSession));
+        assert.deepEqual(await showAnswer("item-alpha"), {ok: true, session: answerSession});
+        assert.deepEqual(calls.at(-1), {url: "/api/symemo/showAnswer", data: {elementId: "item-alpha"}});
+
+        const confirmation = {
+            sessionId: "session-item-alpha",
+            status: "active",
+            stage: "pending",
+            phase: "confirmation",
+            confirmation: {stage: "pending"},
+            remainingElementIds: [] as string[],
+        };
+        installFetchResponse(buildRawEnvelope(questionSession));
+        assert.equal((await acceptLearningStage("pending")).ok, true);
+        assert.deepEqual(calls.at(-1), {url: "/api/symemo/acceptLearningStage", data: {stage: "pending"}});
+        installFetchResponse(buildRawEnvelope(confirmation));
+        assert.equal((await declineLearningStage("pending")).ok, true);
+        assert.deepEqual(calls.at(-1), {url: "/api/symemo/declineLearningStage", data: {stage: "pending"}});
+    });
+
+    it("retains an exact raw grade and accepted identity while discarding scheduler internals", async () => {
+        assert.equal(typeof gradeItem, "function");
+        for (const rawGrade of [0, 1, 2, 3, 4, 5] as const) {
+            installFetchResponse(buildRawEnvelope({
+                reviewAccepted: true,
+                eventId: `grade-${rawGrade}`,
+                rawGrade,
+                passed: rawGrade >= 3,
+                ratingLabel: "internal",
+                ratingMapping: "supermemo-grade-v1",
+                algorithmDecision: {winner: "internal"},
+                candidates: [{algorithm: "internal"}],
+                session: {status: "completed", stage: "completed", phase: "completed"},
+            }));
+            assert.deepEqual(await gradeItem("item-alpha", `grade-${rawGrade}`, rawGrade), {
+                ok: true,
+                eventId: `grade-${rawGrade}`,
+                rawGrade,
+                reviewAccepted: true,
+                session: {status: "completed", stage: "completed", phase: "completed", remainingElementIds: []},
+            });
+        }
+    });
+
+    it("classifies pre-acceptance, unknown, accepted queue, projection, and stale failures conservatively", async () => {
+        installFetchResponse(buildRawEnvelope({
+            errorCode: "durable-write-failed",
+            retryable: true,
+            reviewAccepted: false,
+        }, {code: -1, msg: "not accepted"}));
+        assert.deepEqual(await gradeItem("item-alpha", "event-pre", 2), {
+            ok: false,
+            failure: {
+                errorCode: "durable-write-failed",
+                retryable: true,
+                acceptance: "notAccepted",
+                kind: "domain",
+            },
+        });
+
+        installFetchResponse(buildRawEnvelope({
+            errorCode: "host-rejected",
+            retryable: true,
+        }, {code: -1, msg: "unknown"}));
+        assert.equal((await gradeItem("item-alpha", "event-unknown", 2) as any).failure.acceptance, "unknown");
+
+        installFetchResponse(buildRawEnvelope({
+            errorCode: "queue-advance-failed",
+            retryable: true,
+            reviewAccepted: true,
+            acceptedEventId: "event-queue",
+            session: {...answerSession, pendingAcceptedEventId: "event-queue"},
+        }, {code: -1, msg: "accepted"}));
+        assert.deepEqual(await gradeItem("item-alpha", "event-queue", 0), {
+            ok: false,
+            failure: {
+                errorCode: "queue-advance-failed",
+                retryable: true,
+                acceptance: "accepted",
+                acceptedEventId: "event-queue",
+                session: {...answerSession, pendingAcceptedEventId: "event-queue"},
+                kind: "domain",
+            },
+        });
+
+        installFetchResponse(buildRawEnvelope({
+            errorCode: "projection-refresh-failed",
+            retryable: true,
+            reviewAccepted: true,
+            acceptedEventId: "event-projection",
+        }, {code: -1, msg: "accepted"}));
+        assert.equal((await gradeItem("item-alpha", "event-projection", 5) as any).failure.acceptance, "accepted");
+
+        installFetchResponse(buildRawEnvelope({
+            errorCode: "target-mismatch",
+            retryable: false,
+            reviewAccepted: false,
+            session: questionSession,
+        }, {code: -1, msg: "stale"}));
+        const stale = await gradeItem("item-alpha", "event-stale", 4);
+        assert.equal((stale as any).failure.acceptance, "notAccepted");
+        assert.deepEqual((stale as any).failure.session, questionSession);
+    });
+
+    it("never promotes an accepted failure for another event identity", async () => {
+        installFetchResponse(buildRawEnvelope({
+            errorCode: "queue-advance-failed",
+            retryable: true,
+            reviewAccepted: true,
+            acceptedEventId: "different-event",
+            session: {...answerSession, pendingAcceptedEventId: "different-event"},
+        }, {code: -1, msg: "mismatched acceptance"}));
+
+        const result = await gradeItem("item-alpha", "submitted-event", 3);
+
+        assert.equal((result as any).failure.acceptance, "unknown");
+        assert.equal((result as any).failure.acceptedEventId, undefined);
     });
 });

@@ -4,14 +4,26 @@ import {Model} from "../layout/Model";
 import type {Tab} from "../layout/Tab";
 import {mathRender} from "../protyle/render/mathRender";
 import {genUUID} from "../util/genID";
-import {getCurrentLearningSession, getElement, nextTopic, startLearning, stopLearning} from "./api";
-import {ContentSurfaceHost, getContentSurfaceDecision} from "./ContentSurfaceHost";
+import {
+    acceptLearningStage,
+    declineLearningStage,
+    getCurrentLearningSession,
+    getElement,
+    gradeItem,
+    nextTopic,
+    showAnswer,
+    startLearning,
+    stopLearning,
+} from "./api";
+import {ContentPresentation, ContentSurfaceHost, getContentSurfaceDecision} from "./ContentSurfaceHost";
+import {ItemAuthoringSurface} from "./ItemAuthoringSurface";
+import {ItemReviewSurface} from "./ItemReviewSurface";
+import {LearningControls, LearningControlIntent} from "./LearningControls";
+import {ElementLearningCoordinator} from "./learning";
 import {openElement} from "./openElement";
 import {TOPIC_HTML_CLEANING_POLICY} from "./renderEligibility";
-import {TopicLearningControls, TopicLearningControlIntent} from "./TopicLearningControls";
-import {TopicLearningCoordinator} from "./topicLearning";
 import {TopicHtmlSurface} from "./TopicHtmlSurface";
-import {registerWindowAuthoringParticipant} from "./authoringRegistry";
+import {registerWindowAuthoringParticipant, runWindowAuthoringOperation} from "./authoringRegistry";
 import {elementTypeIcon, getElementDisplayTitle} from "./treeState";
 import type {
     ElementDetailResult,
@@ -30,9 +42,17 @@ export const deriveElementTabState = (result: ElementDetailResult): ElementTabSt
     if (decision.kind === "writableTopic") {
         return {phase: "renderedTopic", detail: result.element, html: result.element.topicMaterial?.html || ""};
     }
-    return decision.kind === "readOnlyTopic"
-        ? {phase: "renderedTopic", detail: result.element, html: decision.html}
-        : {phase: "rendererUnavailable", detail: result.element, reason: decision.reason};
+    if (decision.kind === "itemAuthoring") {
+        return {phase: "itemAuthoring", detail: result.element};
+    }
+    if (decision.kind === "readOnlyTopic") {
+        return {phase: "renderedTopic", detail: result.element, html: decision.html};
+    }
+    return {
+        phase: "rendererUnavailable",
+        detail: result.element,
+        reason: decision.kind === "unavailable" ? decision.reason : "unsupportedRead",
+    };
 };
 
 type MathRenderer = (element: HTMLElement) => void;
@@ -117,6 +137,10 @@ const isSupportedLearningTopic = (detail: ElementDetailView): boolean =>
     detail.topicMaterial?.kind === "html" &&
     detail.topicMaterial.cleaningPolicyVersion === TOPIC_HTML_CLEANING_POLICY;
 
+const isSupportedLearningItem = (detail: ElementDetailView): boolean =>
+    detail.type === "item" && detail.supportStatus === "supported" && detail.item?.kind === "qa" &&
+    detail.item.prompt.trim().length > 0 && detail.item.revision.trim().length > 0;
+
 const unavailableLanguageKey: Record<RendererUnavailableReason, string> = {
     unsupportedRead: "symemoUnsupportedRead",
     unsupportedElementType: "symemoUnsupportedElementType",
@@ -135,8 +159,8 @@ export class ElementTab extends Model {
     private readonly contentElement: HTMLElement;
     private readonly controlsElement: HTMLElement;
     private readonly surfaceHost: ContentSurfaceHost;
-    private readonly learningControls: TopicLearningControls;
-    private learningCoordinator?: TopicLearningCoordinator;
+    private readonly learningControls: LearningControls;
+    private learningCoordinator?: ElementLearningCoordinator;
     private unregisterAuthoring?: () => void;
     private requestGeneration = 0;
     private requesting = false;
@@ -146,7 +170,9 @@ export class ElementTab extends Model {
     private disposed = false;
     private detailKnown = false;
     private supportedTopic = false;
+    private supportedItem = false;
     private learningUnavailable = false;
+    private detail?: ElementDetailView;
 
     constructor(options: {app: App; tab: Tab; elementId: string}) {
         super({app: options.app});
@@ -159,7 +185,7 @@ export class ElementTab extends Model {
         this.contentElement.className = "symemo-element-tab__surface fn__flex-1";
         this.controlsElement = document.createElement("div");
         this.panelElement.append(this.contentElement, this.controlsElement);
-        this.learningControls = new TopicLearningControls({
+        this.learningControls = new LearningControls({
             container: this.controlsElement,
             onIntent: (intent) => this.handleLearningIntent(intent),
         });
@@ -178,6 +204,11 @@ export class ElementTab extends Model {
                 onTitleChange: (title) => this.updateTabTitle(title),
                 onTransitionReadyChange: (ready) => this.setReplacementReady(ready),
             }),
+            createItemAuthoringSurface: () => new ItemAuthoringSurface({
+                container: this.contentElement,
+                onTransitionReadyChange: (ready) => this.setReplacementReady(ready),
+            }),
+            createItemReviewSurface: () => new ItemReviewSurface({container: this.contentElement}),
             renderReadOnly: (_container, html) => this.renderTopic(html),
             renderUnavailable: (_container, detail, reason) => this.renderUnavailable(detail, reason),
         });
@@ -200,11 +231,12 @@ export class ElementTab extends Model {
             });
             return;
         }
-        this.learningCoordinator = new TopicLearningCoordinator({
+        this.learningCoordinator = new ElementLearningCoordinator({
             displayedElementId: this.elementId,
             getDisplayedEligibility: () => ({
                 known: this.detailKnown && !this.disposed && this.panelElement.isConnected,
                 supportedTopic: this.supportedTopic && !this.disposed && this.panelElement.isConnected,
+                supportedItem: this.supportedItem && !this.disposed && this.panelElement.isConnected,
                 readOnly: window.siyuan?.config?.readonly === true,
                 barrierActive: this.windowBarrierActive,
                 unavailable: this.learningUnavailable,
@@ -213,7 +245,11 @@ export class ElementTab extends Model {
             getCurrent: getCurrentLearningSession,
             start: startLearning,
             stop: stopLearning,
-            next: nextTopic,
+            showAnswer,
+            gradeItem,
+            nextTopic,
+            acceptStage: acceptLearningStage,
+            declineStage: declineLearningStage,
             createEventId: genUUID,
             followTarget: async (elementId) => {
                 if (this.disposed || !this.panelElement.isConnected || this.windowBarrierActive) return false;
@@ -225,7 +261,13 @@ export class ElementTab extends Model {
                 }));
                 return followed && !this.disposed && this.panelElement.isConnected;
             },
-            publish: (projection) => this.learningControls.render(projection),
+            publish: (projection) => {
+                if (!this.disposed && this.panelElement.isConnected) {
+                    this.learningControls.render(projection);
+                }
+            },
+            publishPresentation: (presentation) => this.projectContentPresentation(presentation),
+            runOperation: runWindowAuthoringOperation,
         });
         this.panelElement.addEventListener("click", (event: MouseEvent) => {
             if (this.readerElement) {
@@ -246,7 +288,9 @@ export class ElementTab extends Model {
         this.state = {phase: "loading"};
         this.detailKnown = false;
         this.supportedTopic = false;
+        this.supportedItem = false;
         this.learningUnavailable = false;
+        this.detail = undefined;
         this.learningCoordinator?.reproject();
         this.renderStatus(language("loading"));
         const result = await getElement(this.elementId);
@@ -256,6 +300,7 @@ export class ElementTab extends Model {
         }
         this.state = deriveElementTabState(result);
         this.detailKnown = true;
+        this.detail = result.ok ? result.element : undefined;
         if (this.state.phase === "missing") {
             this.renderStatus(language("symemoElementMissing"), true);
             this.setReplacementReady(true);
@@ -265,6 +310,9 @@ export class ElementTab extends Model {
             this.setReplacementReady(true);
             this.learningCoordinator?.reproject();
         } else if (this.state.phase === "renderedTopic") {
+            this.updateSafeIdentity(this.state.detail);
+            await this.mountWhenAvailable(this.state.detail, generation);
+        } else if (this.state.phase === "itemAuthoring") {
             this.updateSafeIdentity(this.state.detail);
             await this.mountWhenAvailable(this.state.detail, generation);
         } else if (this.state.phase === "rendererUnavailable") {
@@ -308,6 +356,7 @@ export class ElementTab extends Model {
         this.unregisterAuthoring?.();
         this.unregisterAuthoring = undefined;
         this.pendingMount = undefined;
+        this.detail = undefined;
         this.readerElement = undefined;
         this.surfaceHost.destroy();
         this.learningControls.destroy();
@@ -327,6 +376,22 @@ export class ElementTab extends Model {
         const icon = elementTypeIcon(detail.type);
         this.tab.icon = icon;
         this.tab.headElement?.querySelector(".item__graphic use")?.setAttribute("xlink:href", "#" + icon);
+    }
+
+    private projectContentPresentation(presentation: ContentPresentation): void {
+        const detail = this.detail;
+        if (!detail || this.disposed || this.learningUnavailable || !this.panelElement.isConnected) return;
+        const generation = this.requestGeneration;
+        void this.surfaceHost.mount(detail, presentation).catch(() => {
+            if (this.disposed || generation !== this.requestGeneration || !this.panelElement.isConnected) return;
+            this.state = {phase: "failure", errorKind: "response"};
+            this.renderStatus(language("symemoElementLoadFailed"), true);
+            this.setReplacementReady(true);
+            this.supportedTopic = false;
+            this.supportedItem = false;
+            this.learningUnavailable = true;
+            this.learningCoordinator?.reproject();
+        });
     }
 
     private updateTabTitle(title: string): void {
@@ -373,12 +438,13 @@ export class ElementTab extends Model {
             return;
         }
         this.supportedTopic = isSupportedLearningTopic(detail);
+        this.supportedItem = isSupportedLearningItem(detail);
         this.learningUnavailable = false;
         this.learningCoordinator?.reproject();
         if (this.windowBarrierActive) {
             return;
         }
-        if (decision.kind !== "writableTopic") {
+        if (decision.kind !== "writableTopic" && decision.kind !== "itemAuthoring") {
             this.setReplacementReady(true);
         }
     }
@@ -431,18 +497,28 @@ export class ElementTab extends Model {
         this.contentElement.append(status);
     }
 
-    private handleLearningIntent(intent: TopicLearningControlIntent): void {
-        if (intent === "learn") {
+    private handleLearningIntent(intent: LearningControlIntent): void {
+        if (intent.kind === "learn") {
             void this.learningCoordinator?.learn();
-        } else if (intent === "resume") {
+        } else if (intent.kind === "resume") {
             void this.learningCoordinator?.resume();
-        } else if (intent === "stop") {
+        } else if (intent.kind === "stop") {
             void this.learningCoordinator?.stop();
-        } else if (intent === "next") {
+        } else if (intent.kind === "next") {
             void this.learningCoordinator?.next();
-        } else if (intent === "retryNext") {
+        } else if (intent.kind === "showAnswer") {
+            void this.learningCoordinator?.showAnswer();
+        } else if (intent.kind === "grade") {
+            void this.learningCoordinator?.grade(intent.rawGrade);
+        } else if (intent.kind === "acceptPending") {
+            void this.learningCoordinator?.acceptPending();
+        } else if (intent.kind === "declinePending") {
+            void this.learningCoordinator?.declinePending();
+        } else if (intent.kind === "declineFinalDrill") {
+            void this.learningCoordinator?.declineFinalDrill();
+        } else if (intent.kind === "retryNext") {
             void this.learningCoordinator?.retryNext();
-        } else if (intent === "continue") {
+        } else if (intent.kind === "continue") {
             void this.learningCoordinator?.continueNext();
         }
     }

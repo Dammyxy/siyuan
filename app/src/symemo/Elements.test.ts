@@ -103,6 +103,7 @@ before(async () => {
                 openInNewTab: "Open in New Tab",
                 symemoCollapseAll: "Collapse all",
                 symemoElements: "Elements",
+                symemoNewItem: "New Item",
                 symemoOpenElement: "Open Element",
                 symemoTreeEmpty: "No Elements",
                 symemoTreeLoadFailed: "Load failed",
@@ -319,12 +320,14 @@ describe("Elements native Adapter behavior", () => {
         const header = panelElement.querySelector(".block__icons") as TestElement;
         const controls = header.children.slice(1);
 
-        assert.equal(header.children.length, 5);
-        assert.deepEqual(controls.map((control) => control.getAttribute("data-type")), ["add", "refresh", "collapse", "min"]);
-        assert.deepEqual(controls.map((control) => control.getAttribute("aria-label")), ["New", "Refresh", "Collapse all", "Minimize"]);
+        assert.equal(header.children.length, 6);
+        assert.deepEqual(controls.map((control) => control.getAttribute("data-type")), ["add", "add-item", "refresh", "collapse", "min"]);
+        assert.deepEqual(controls.map((control) => control.getAttribute("aria-label")), ["New", "New Item", "Refresh", "Collapse all", "Minimize"]);
         assert.equal(header.querySelector(".block__logo span")?.textContent, "Elements");
+        assert.equal(header.querySelector('[data-type="add"] use')?.getAttribute("xlink:href"), "#iconAdd");
+        assert.equal(header.querySelector('[data-type="add-item"] use')?.getAttribute("xlink:href"), "#iconRiffCard");
 
-        controls[3].dispatch("click");
+        controls[4].dispatch("click");
         assert.deepEqual(dockToggleCalls, [["elements", false, true]]);
     });
 

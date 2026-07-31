@@ -68,3 +68,24 @@ func corruptProjectionPayload(t *testing.T, engine *Engine) {
 	}
 	engine.index.data.Projections[fixtureElementID] = projection
 }
+
+func TestItemProjectionRebuildCGOParity(t *testing.T) {
+	engine, config, item := newItemAuthorityEngine(t, supportedTestItem("20260731195100-cgopar", "CGO question", "CGO answer", "rev-cgo"))
+	before, err := engine.Query(t.Context(), Query{Kind: QueryItemAuthoring, ElementID: item.ID})
+	if err != nil || before.ItemAuthoring == nil {
+		t.Fatalf("non-CGO authoring = %#v, err=%v", before.ItemAuthoring, err)
+	}
+	if err = engine.Close(); err != nil {
+		t.Fatal(err)
+	}
+	removeSQLiteFiles(config.IndexPath())
+	rebuilt, err := NewEngine(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rebuilt.Close()
+	after, err := rebuilt.Query(t.Context(), Query{Kind: QueryItemAuthoring, ElementID: item.ID})
+	if err != nil || after.ItemAuthoring == nil || after.ItemAuthoring.Prompt != before.ItemAuthoring.Prompt || after.ItemAuthoring.Answer != before.ItemAuthoring.Answer {
+		t.Fatalf("non-CGO rebuilt authoring = %#v, err=%v", after.ItemAuthoring, err)
+	}
+}

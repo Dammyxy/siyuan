@@ -1,7 +1,8 @@
 import {after, before, beforeEach, describe, it} from "node:test";
 import * as assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
 import type {App} from "../index";
-import type {ElementDetailResult, OpenElementOptions, SessionCallResult} from "./types";
+import type {ElementDetailResult, ElementDetailView, ItemAuthoringResult, ItemGradeCallResult, ItemQAChangeResult, OpenElementOptions, SessionCallResult} from "./types";
 import {deferred, TestDocument, TestElement} from "./testDom";
 
 const stubPaths = [
@@ -24,6 +25,11 @@ let getCurrentLearningSessionImpl: () => Promise<SessionCallResult>;
 let startLearningImpl: () => Promise<SessionCallResult>;
 let stopLearningImpl: () => Promise<SessionCallResult>;
 let nextTopicImpl: typeof import("./api").nextTopic;
+let showAnswerImpl: (elementId: string) => Promise<SessionCallResult>;
+let gradeItemImpl: (elementId: string, eventId: string, rawGrade: 0 | 1 | 2 | 3 | 4 | 5) => Promise<ItemGradeCallResult>;
+let getItemAuthoringImpl: (elementId: string) => Promise<ItemAuthoringResult>;
+let saveItemQAImpl: (elementId: string, revision: string, prompt: string, answer: string) => Promise<ItemQAChangeResult>;
+let runWindowOperationImpl: (name: string, callback: (operation: {isCancelled: boolean}) => Promise<unknown>) => Promise<unknown>;
 let testDocument: TestDocument;
 let lastSurface: FakeTopicHtmlSurface | undefined;
 let openElementCalls: OpenElementOptions[];
@@ -83,6 +89,13 @@ before(async () => {
         startLearning: () => startLearningImpl(),
         stopLearning: () => stopLearningImpl(),
         nextTopic: (elementId: string, eventId: string) => nextTopicImpl(elementId, eventId),
+        showAnswer: (elementId: string) => showAnswerImpl(elementId),
+        gradeItem: (elementId: string, eventId: string, rawGrade: 0 | 1 | 2 | 3 | 4 | 5) =>
+            gradeItemImpl(elementId, eventId, rawGrade),
+        acceptLearningStage: () => getCurrentLearningSessionImpl(),
+        declineLearningStage: () => getCurrentLearningSessionImpl(),
+        getItemAuthoring: (elementId: string) => getItemAuthoringImpl(elementId),
+        saveItemQA: (elementId: string, revision: string, prompt: string, answer: string) => saveItemQAImpl(elementId, revision, prompt, answer),
     }} as NodeModule;
     require.cache[stubPaths[4]] = {exports: {TopicHtmlSurface: FakeTopicHtmlSurface}} as NodeModule;
     require.cache[stubPaths[5]] = {exports: {
@@ -95,10 +108,8 @@ before(async () => {
                 unregisterCalls++;
             };
         },
-        runWindowAuthoringOperation: async (_name: string, callback: (operation: {isCancelled: boolean}) => unknown) => ({
-            started: true,
-            value: await callback({isCancelled: false}),
-        }),
+        runWindowAuthoringOperation: (name: string, callback: (operation: {isCancelled: boolean}) => Promise<unknown>) =>
+            runWindowOperationImpl(name, callback),
     }} as NodeModule;
     (globalThis as unknown as {window: Window}).window = {
         siyuan: {
@@ -110,6 +121,8 @@ before(async () => {
                 symemoElementMissing: "Missing",
                 symemoLearn: "Learn",
                 symemoNext: "Next",
+                symemoShowAnswer: "Show Answer",
+                symemoAnswer: "Answer",
                 symemoResumeLearning: "Resume learning",
                 symemoEndLearning: "End learning",
                 symemoLearningLoading: "Loading learning session...",
@@ -144,6 +157,33 @@ beforeEach(() => {
         reviewAccepted: true,
         session: {status: "completed", stage: "completed", phase: "completed", remainingElementIds: []},
     });
+    showAnswerImpl = async () => getCurrentLearningSessionImpl();
+    gradeItemImpl = async (_elementId, eventId, rawGrade) => ({
+        ok: true,
+        eventId,
+        rawGrade,
+        reviewAccepted: true,
+        session: {status: "completed", stage: "completed", phase: "completed", remainingElementIds: []},
+    });
+    runWindowOperationImpl = async (_name, callback) => ({
+        started: true,
+        value: await callback({isCancelled: false}),
+    });
+    getItemAuthoringImpl = async (elementId) => ({ok: true, authoring: {
+        elementId,
+        prompt: "Derived Item title",
+        answer: "Item answer",
+        contentRevision: "rev-v1-item",
+    }});
+    saveItemQAImpl = async (elementId, _revision, prompt, answer) => ({ok: true, change: {
+        kind: "SaveItemQA",
+        elementId,
+        changedField: "itemQA",
+        revision: "rev-v1-item-saved",
+        itemQA: {prompt, answer, contentRevision: "rev-v1-item-saved"},
+        changed: true,
+        changeAccepted: true,
+    }});
     lastSurface = undefined;
     lastParticipant = undefined;
     openElementCalls = [];
@@ -277,8 +317,15 @@ describe("Element detail state", () => {
 
     it("maps eligible, unavailable, missing, and failed reads to closed UI states", () => {
         assert.equal(deriveElementTabState({ok: true, element: detail}).phase, "renderedTopic");
-        assert.deepEqual(deriveElementTabState({ok: true, element: {...detail, type: "item", topicMaterial: undefined}}), {
-            phase: "rendererUnavailable", detail: {...detail, type: "item", topicMaterial: undefined}, reason: "unsupportedElementType",
+        const itemDetail: ElementDetailView = {
+            ...detail,
+            type: "item",
+            sourceMode: "unknown",
+            topicMaterial: undefined,
+            item: {kind: "qa", prompt: "Question", revision: "rev-v1-item"},
+        };
+        assert.deepEqual(deriveElementTabState({ok: true, element: itemDetail}), {
+            phase: "itemAuthoring", detail: itemDetail,
         });
         assert.deepEqual(deriveElementTabState({ok: false, kind: "missing"}), {phase: "missing"});
         assert.deepEqual(deriveElementTabState({ok: false, kind: "request"}), {phase: "failure", errorKind: "request"});
@@ -309,6 +356,17 @@ const writableTopic = {
     },
 };
 
+const writableItem = {
+    elementId: "item-id",
+    rootElementId: "item-id",
+    storageKind: "rootDocument",
+    type: "item",
+    title: "Derived Item title",
+    sourceMode: "unknown",
+    supportStatus: "supported",
+    item: {kind: "qa" as const, prompt: "Derived Item title", revision: "rev-v1-item"},
+};
+
 const createTabFixture = () => {
     const panelElement = testDocument.createElement("div");
     const headElement = testDocument.createElement("div");
@@ -327,6 +385,14 @@ const createTabFixture = () => {
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe("Element tab lifecycle", () => {
+
+    it("gives keyboard ownership to one stable Element-wide control view", () => {
+        const source = readFileSync(require.resolve("./ElementTab"), "utf8");
+        assert.equal(source.includes("LearningControls"), true);
+        assert.equal(source.includes("ElementLearningCoordinator"), true);
+        assert.equal(source.includes("TopicLearningControls"), false);
+        assert.equal(source.includes("TopicLearningCoordinator"), false);
+    });
     it("creates stable content and learning-control siblings before asynchronous reads resolve", () => {
         const detail = deferred<ElementDetailResult>();
         const current = deferred<SessionCallResult>();
@@ -524,6 +590,71 @@ describe("Element tab lifecycle", () => {
         assert.equal(fixture.headElement.classList.contains("item--unupdate"), true);
     });
 
+    it("mounts an ordinary Item authoring Surface with derived native identity and transition barriers", async () => {
+        window.siyuan.config.fileTree.openFilesUseCurrentTab = true;
+        getElementImpl = async () => ({ok: true, element: writableItem});
+        const fixture = createTabFixture();
+        const model = new ElementTab({app: {} as App, tab: fixture.tab, elementId: "item-id"});
+        await nextTurn();
+        await nextTurn();
+
+        assert.equal(model.state.phase, "itemAuthoring");
+        assert.deepEqual(fixture.titles, ["Derived Item title"]);
+        assert.equal(fixture.tab.icon, "iconRiffCard");
+        const prompt = fixture.panelElement.querySelector('textarea[data-role="prompt"]') as TestElement;
+        assert.ok(prompt);
+        prompt.value = "Edited derived title";
+        prompt.dispatch("input");
+        assert.equal(fixture.headElement.classList.contains("item--unupdate"), false);
+
+        assert.deepEqual(await model.prepareTransition("tab-detach"), {allowed: true});
+        assert.equal(fixture.headElement.classList.contains("item--unupdate"), true);
+        assert.equal(saveItemQAImpl !== undefined, true);
+    });
+
+    it("replaces ordinary Item authoring with the matching active review Surface", async () => {
+        getElementImpl = async () => ({ok: true, element: writableItem});
+        getCurrentLearningSessionImpl = async () => ({ok: true, session: {
+            sessionId: "item-review-session",
+            status: "active",
+            stage: "outstanding",
+            phase: "question",
+            current: {kind: "element.item", elementId: "item-id", prompt: "Captured question"},
+            remainingElementIds: [],
+        }});
+        const fixture = createTabFixture();
+        new ElementTab({app: {} as App, tab: fixture.tab, elementId: "item-id"});
+        await nextTurn();
+        await nextTurn();
+
+        assert.equal(fixture.panelElement.querySelector("textarea"), null);
+        assert.equal(fixture.panelElement.querySelector('[data-role="item-question"]')?.textContent, "Captured question");
+        assert.equal(fixture.panelElement.children[1].querySelector("button")?.textContent, "Show Answer");
+    });
+
+    it("restores ordinary Item authoring when the active review is no longer current", async () => {
+        let current: SessionCallResult = {ok: true, session: {
+            sessionId: "item-review-session",
+            status: "active",
+            stage: "outstanding",
+            phase: "question",
+            current: {kind: "element.item", elementId: "item-id", prompt: "Captured question"},
+            remainingElementIds: [],
+        }};
+        getElementImpl = async () => ({ok: true, element: writableItem});
+        getCurrentLearningSessionImpl = async () => current;
+        const fixture = createTabFixture();
+        const model = new ElementTab({app: {} as App, tab: fixture.tab, elementId: "item-id"});
+        await nextTurn();
+        await nextTurn();
+        assert.equal(fixture.panelElement.querySelector("textarea"), null);
+
+        current = {ok: true, session: {status: "completed", stage: "completed", phase: "completed", remainingElementIds: []}};
+        await (model as unknown as {learningCoordinator: {resume(): Promise<void>}}).learningCoordinator.resume();
+
+        assert.ok(fixture.panelElement.querySelector('textarea[data-role="prompt"]'));
+    });
+
     it("turns a writable editor mount failure into a retryable stable tab state", async () => {
         surfaceMountError = new Error("editor chunk unavailable");
         getElementImpl = async () => ({ok: true, element: writableTopic});
@@ -634,5 +765,152 @@ describe("Element tab lifecycle", () => {
             intent: "new",
             source: "other",
         }]);
+    });
+
+    it("keeps a cancelled Show Answer response inert across the window barrier", async () => {
+        const response = deferred<SessionCallResult>();
+        let operation: {isCancelled: boolean} | undefined;
+        getElementImpl = async () => ({ok: true, element: writableItem});
+        getCurrentLearningSessionImpl = async () => ({ok: true, session: {
+            sessionId: "barrier-session",
+            status: "active",
+            stage: "outstanding",
+            phase: "question",
+            current: {kind: "element.item", elementId: "item-id", prompt: "Question"},
+            remainingElementIds: [],
+        }});
+        showAnswerImpl = async () => response.promise;
+        runWindowOperationImpl = async (name, callback) => {
+            const currentOperation = {isCancelled: false};
+            if (name === "symemo-item-show-answer") operation = currentOperation;
+            return {started: true, value: await callback(currentOperation)};
+        };
+        const fixture = createTabFixture();
+        const model = new ElementTab({app: {} as App, tab: fixture.tab, elementId: "item-id"});
+        await nextTurn();
+        await nextTurn();
+
+        (fixture.panelElement.children[1].querySelector("button") as TestElement).dispatch("click");
+        await nextTurn();
+        model.setWindowBarrier(true);
+        assert.ok(operation);
+        operation.isCancelled = true;
+        response.resolve({ok: true, session: {
+            sessionId: "barrier-session",
+            status: "active",
+            stage: "outstanding",
+            phase: "answer",
+            current: {kind: "element.item", elementId: "item-id", prompt: "Question", answer: "Answer"},
+            remainingElementIds: [],
+        }});
+        await nextTurn();
+        model.setWindowBarrier(false);
+
+        assert.equal(fixture.panelElement.querySelector('[data-role="item-answer"]'), null);
+        assert.equal(fixture.panelElement.children[1].querySelector("[data-grade]"), null);
+    });
+
+    it("drops a late Show Answer effect after tab close and idempotent cleanup", async () => {
+        const response = deferred<SessionCallResult>();
+        getElementImpl = async () => ({ok: true, element: writableItem});
+        getCurrentLearningSessionImpl = async () => ({ok: true, session: {
+            sessionId: "close-session",
+            status: "active",
+            stage: "outstanding",
+            phase: "question",
+            current: {kind: "element.item", elementId: "item-id", prompt: "Question"},
+            remainingElementIds: [],
+        }});
+        showAnswerImpl = async () => response.promise;
+        const fixture = createTabFixture();
+        const model = new ElementTab({app: {} as App, tab: fixture.tab, elementId: "item-id"});
+        await nextTurn();
+        await nextTurn();
+        (fixture.panelElement.children[1].querySelector("button") as TestElement).dispatch("click");
+        await nextTurn();
+
+        assert.deepEqual(await model.prepareTransition("tab-detach"), {allowed: true});
+        model.destroy();
+        response.resolve({ok: true, session: {
+            sessionId: "close-session",
+            status: "active",
+            stage: "outstanding",
+            phase: "answer",
+            current: {kind: "element.item", elementId: "item-id", prompt: "Question", answer: "Answer"},
+            remainingElementIds: [],
+        }});
+        await nextTurn();
+
+        assert.deepEqual(fixture.panelElement.children, []);
+        assert.equal(unregisterCalls, 1);
+    });
+
+    it("does not publish a late accepted grade into a detached replacement panel", async () => {
+        const response = deferred<ItemGradeCallResult>();
+        getElementImpl = async () => ({ok: true, element: writableItem});
+        getCurrentLearningSessionImpl = async () => ({ok: true, session: {
+            sessionId: "replace-session",
+            status: "active",
+            stage: "outstanding",
+            phase: "answer",
+            current: {kind: "element.item", elementId: "item-id", prompt: "Question", answer: "Answer"},
+            remainingElementIds: [],
+        }});
+        gradeItemImpl = async () => response.promise;
+        const fixture = createTabFixture();
+        new ElementTab({app: {} as App, tab: fixture.tab, elementId: "item-id"});
+        await nextTurn();
+        await nextTurn();
+        const controls = fixture.panelElement.children[1];
+        (controls.querySelector('button[data-grade="4"]') as TestElement).dispatch("click");
+        await nextTurn();
+
+        fixture.panelElement.isConnected = false;
+        response.resolve({
+            ok: true,
+            eventId: "accepted-event",
+            rawGrade: 4,
+            reviewAccepted: true,
+            session: {
+                sessionId: "replace-session",
+                status: "active",
+                stage: "outstanding",
+                phase: "question",
+                current: {kind: "element.item", elementId: "next-item", prompt: "Next"},
+                remainingElementIds: [],
+            },
+        });
+        await nextTurn();
+
+        assert.equal(controls.textContent.includes("Learn"), false);
+        assert.deepEqual(openElementCalls, []);
+    });
+
+    it("discards disposable Item draft and learning state when the tab is destroyed and recreated", async () => {
+        let authoringReads = 0;
+        getElementImpl = async () => ({ok: true, element: writableItem});
+        getItemAuthoringImpl = async (elementId) => {
+            authoringReads++;
+            return {ok: true, authoring: {
+                elementId, prompt: "Authoritative prompt", answer: "Authoritative answer", contentRevision: "rev-authority",
+            }};
+        };
+        const fixture = createTabFixture();
+        const first = new ElementTab({app: {} as App, tab: fixture.tab, elementId: "item-id"});
+        await nextTurn();
+        await nextTurn();
+        const prompt = fixture.panelElement.querySelector('textarea[data-role="prompt"]') as TestElement;
+        prompt.value = "Disposable local draft";
+        prompt.dispatch("input");
+        first.destroy();
+
+        const second = new ElementTab({app: {} as App, tab: fixture.tab, elementId: "item-id"});
+        await nextTurn();
+        await nextTurn();
+
+        assert.equal(authoringReads, 2);
+        assert.equal((fixture.panelElement.querySelector('textarea[data-role="prompt"]') as TestElement).value, "Authoritative prompt");
+        assert.equal(fixture.panelElement.textContent.includes("Disposable local draft"), false);
+        second.destroy();
     });
 });

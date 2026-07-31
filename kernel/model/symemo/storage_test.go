@@ -23,9 +23,107 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestItemSourceRejectsWhitespaceOnlyQuestionOrAnswer(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		prompt string
+		answer string
+	}{
+		{name: "question", prompt: " \t\r\n ", answer: "Answer"},
+		{name: "answer", prompt: "Question", answer: "\n\t "},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeTestJSON(t, filepath.Join(root, "elements", fixtureElementID+".sme"), map[string]any{
+				"spec": 1, "id": fixtureElementID, "type": "item", "processingState": "processed", "payloadSpec": 1,
+				"payload": map[string]any{"kind": "qa", "prompt": test.prompt, "answer": test.answer},
+			})
+			config := Config{StorageRoot: root, IndexRoot: filepath.Join(root, "temp")}
+			scan, err := config.scanElements()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(scan.Elements) != 0 || len(scan.Diagnostics) != 1 || scan.Diagnostics[0].Code != sourceIncompleteCode {
+				t.Fatalf("whitespace-only Item scan = %#v", scan)
+			}
+		})
+	}
+}
+
+func TestItemSourcePreservesAuthoredTextRevisionAndUnknownPayloadFields(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "elements", fixtureElementID+".sme")
+	prompt := "  Question\nSecond line  "
+	answer := "\tAnswer\n  "
+	writeTestJSON(t, path, map[string]any{
+		"spec": 1, "id": fixtureElementID, "type": "item", "processingState": "processed", "payloadSpec": 1,
+		"payload": map[string]any{
+			"kind": "qa", "prompt": prompt, "answer": answer, "revision": "rev-v1-authored",
+			"futurePayload": map[string]any{"keep": true},
+		},
+	})
+	config := Config{StorageRoot: root, IndexRoot: filepath.Join(root, "temp")}
+	scan, err := config.scanElements()
+	if err != nil {
+		t.Fatal(err)
+	}
+	element, ok := scan.Elements[fixtureElementID]
+	if !ok || element.Payload.Prompt != prompt || element.Payload.Answer != answer {
+		t.Fatalf("authored Item = %#v", element)
+	}
+	encoded, err := json.Marshal(element)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"revision":"rev-v1-authored"`, `"futurePayload":{"keep":true}`} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("marshaled Item omitted %s: %s", want, encoded)
+		}
+	}
+}
+
+func TestLegacyItemEffectiveRevisionIsDeterministicAndZeroWrite(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "elements", fixtureElementID+".sme")
+	writeTestJSON(t, path, map[string]any{
+		"spec": 1, "id": fixtureElementID, "type": "item", "processingState": "processed", "payloadSpec": 1,
+		"payload": map[string]any{"kind": "qa", "prompt": "Question", "answer": "Answer"},
+	})
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := Config{StorageRoot: root, IndexRoot: filepath.Join(root, "temp")}
+	scan, err := config.scanElements()
+	if err != nil {
+		t.Fatal(err)
+	}
+	element := scan.Elements[fixtureElementID]
+	applyEffectiveElementAuthoringRevisions(&element)
+	payload := reflect.ValueOf(element.Payload)
+	revision := payload.FieldByName("Revision")
+	if !revision.IsValid() || revision.Kind() != reflect.String || !strings.HasPrefix(revision.String(), "legacy-v1-") {
+		t.Fatalf("legacy Item revision = %#v", element.Payload)
+	}
+	first := revision.String()
+	applyEffectiveElementAuthoringRevisions(&element)
+	if revision = reflect.ValueOf(element.Payload).FieldByName("Revision"); revision.String() != first {
+		t.Fatalf("legacy Item revision changed: first=%q second=%q", first, revision.String())
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("effective legacy Item revision wrote source authority")
+	}
+}
 
 func TestLearningDayBoundaryUsesLocalWallClockAcrossDST(t *testing.T) {
 	location, err := time.LoadLocation("America/New_York")

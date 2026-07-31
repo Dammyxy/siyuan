@@ -148,3 +148,32 @@ func TestChangeElementReplacementErrorClassification(t *testing.T) {
 		}
 	})
 }
+
+func TestSaveItemQAAcceptedProjectionFailureReturnsCanonicalPair(t *testing.T) {
+	engine, config, item := newItemAuthorityEngine(t, supportedTestItem("20260731162000-qaproj1", "Original prompt", "Original answer", "rev-v1-original"))
+	restoreProjection := installProjectionRefreshFailure(t, engine, config)
+
+	result, err := engine.ChangeElement(t.Context(), ChangeElementCommand{Kind: ChangeElementSaveItemQA, SaveItemQA: SaveItemQACommand{
+		ElementID: item.ID, ExpectedContentRevision: item.Payload.Revision, Prompt: "Accepted prompt", Answer: "Accepted answer",
+	}})
+	domainErr, ok := AsDomainError(err)
+	if !ok || domainErr.Code != ErrProjectionRefreshFailed || !domainErr.Retryable || !domainErr.ChangeAccepted || domainErr.AcceptedChange == nil || domainErr.AcceptedChange.ItemQA == nil || !result.ChangeAccepted || result.ItemQA == nil {
+		t.Fatalf("accepted Q/A result=%#v err=%#v", result, domainErr)
+	}
+	if domainErr.AcceptedChange.Kind != ChangeElementSaveItemQA || domainErr.AcceptedChange.ElementID != item.ID ||
+		domainErr.AcceptedChange.ChangedField != ChangedElementItemQA || !domainErr.AcceptedChange.Changed ||
+		!domainErr.AcceptedChange.ChangeAccepted || result.ItemQA.Prompt != "Accepted prompt" ||
+		result.ItemQA.Answer != "Accepted answer" || result.ItemQA.ContentRevision != result.Revision ||
+		domainErr.AcceptedChange.ItemQA.ContentRevision != result.Revision {
+		t.Fatalf("accepted canonical Q/A result=%#v err=%#v", result, domainErr)
+	}
+	if _, queryErr := engine.Query(t.Context(), Query{Kind: QueryCurrentSession}); !hasCode(queryErr, ErrProjectionRebuildFailed) {
+		t.Fatalf("accepted Q/A projection failure did not latch Engine: %v", queryErr)
+	}
+	source := readOptionalFile(t, filepath.Join(config.ElementsRoot(), item.ID+".sme"))
+	if !strings.Contains(string(source), "Accepted prompt") || !strings.Contains(string(source), "Accepted answer") || !strings.Contains(string(source), result.Revision) {
+		t.Fatalf("accepted Q/A authority missing: %s", source)
+	}
+
+	restoreProjection()
+}

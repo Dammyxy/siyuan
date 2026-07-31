@@ -1,9 +1,135 @@
 .symemo-elements,
 .symemo-element-tab,
-.symemo-topic-html-surface {
+.symemo-topic-html-surface,
+.symemo-item-authoring {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+.symemo-item-create {
+  box-sizing: border-box;
+  display: grid;
+  gap: 8px;
+  max-height: min(68vh, 640px);
+  min-width: 0;
+  overflow-y: auto;
+
+  .b3-label {
+    color: var(--b3-theme-on-surface);
+    font-weight: 500;
+    margin-top: 4px;
+  }
+
+  .b3-text-field {
+    box-sizing: border-box;
+    line-height: 1.55;
+    min-height: 112px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    resize: vertical;
+    white-space: pre-wrap;
+    width: 100%;
+    word-break: break-word;
+  }
+
+  [data-role="status"] {
+    color: var(--b3-theme-on-surface-light);
+    min-height: 20px;
+    overflow-wrap: anywhere;
+  }
+}
+
+.symemo-item-authoring {
+  background: var(--b3-theme-background);
+  box-sizing: border-box;
+  color: var(--b3-theme-on-background);
+  gap: 8px;
+  margin: 0 auto;
+  max-width: 920px;
+  overflow: auto;
+  padding: 24px clamp(20px, 5vw, 64px) 40px;
+  width: 100%;
+
+  label,
+  h2 {
+    color: var(--b3-theme-on-surface);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  &__field {
+    box-sizing: border-box;
+    flex: 1 1 160px;
+    line-height: 1.6;
+    min-height: clamp(128px, 24vh, 280px);
+    min-width: 0;
+    overflow-wrap: anywhere;
+    resize: vertical;
+    white-space: pre-wrap;
+    width: 100%;
+    word-break: break-word;
+  }
+
+  section {
+    border-bottom: 1px solid var(--b3-theme-surface-lighter);
+    min-width: 0;
+    padding: 12px 0 20px;
+
+    div {
+      line-height: 1.65;
+      margin-top: 8px;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  }
+
+  [data-role="status"] {
+    color: var(--b3-theme-on-surface-light);
+    flex: 0 0 auto;
+    min-height: 22px;
+    overflow-wrap: anywhere;
+  }
+
+  &__actions {
+    align-items: center;
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    gap: 8px;
+
+    [data-role="compare"] {
+      color: var(--b3-theme-on-surface-light);
+      flex: 1 1 240px;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+  }
+}
+
+@media (max-height: 720px) {
+  .symemo-item-authoring {
+    padding-bottom: 24px;
+    padding-top: 16px;
+
+    &__field {
+      min-height: 112px;
+    }
+  }
+
+  .symemo-item-create .b3-text-field {
+    min-height: 88px;
+  }
+}
+
+@media (max-width: 600px) {
+  .symemo-item-authoring {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
 }
 
 .symemo-elements {
@@ -231,5 +357,77 @@
     color: var(--b3-theme-on-background);
     font-size: 18px;
     font-weight: 600;
+  }
+}
+
+.symemo-item-review {
+  box-sizing: border-box;
+  color: var(--b3-theme-on-background);
+  display: grid;
+  gap: 28px;
+  margin: 0 auto;
+  max-width: 880px;
+  min-height: 100%;
+  min-width: 0;
+  overflow: auto;
+  padding: 40px clamp(20px, 5vw, 64px) 64px;
+  width: 100%;
+
+  &__question,
+  &__answer {
+    font-size: 18px;
+    line-height: 1.65;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  &__answer {
+    border-top: 1px solid var(--b3-theme-surface-lighter);
+    padding-top: 28px;
+  }
+}
+
+.symemo-learning-controls {
+  &__grades {
+    align-items: center;
+    display: flex;
+    flex: 0 1 auto;
+    flex-wrap: wrap;
+    gap: 8px;
+
+    .b3-button {
+      flex: 0 0 42px;
+      height: 32px;
+      min-width: 42px;
+      padding: 0 8px;
+    }
+  }
+
+  &__assistive {
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    height: 1px;
+    overflow: hidden;
+    position: absolute;
+    white-space: nowrap;
+    width: 1px;
+  }
+}
+
+@media (max-width: 600px) {
+  .symemo-item-review {
+    gap: 20px;
+    padding: 24px 16px 40px;
+  }
+
+  .symemo-element-tab__learning {
+    align-items: stretch;
+    padding: 8px 12px;
+  }
+
+  .symemo-learning-controls__grades {
+    justify-content: space-between;
+    width: 100%;
   }
 }

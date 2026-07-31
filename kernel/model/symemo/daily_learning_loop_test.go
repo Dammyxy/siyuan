@@ -19,6 +19,7 @@ package symemo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -491,6 +492,87 @@ func TestPendingAcceptanceIntroducesItemsAndTopicsInGlobalOrder(t *testing.T) {
 	topicEvent := eventByID(t, mustEvents(t, config), "20260719092100-pending-topic")
 	if topicEvent.Type != "introduceElement" || topicEvent.ReviewKind != "introduceTopic" || topicEvent.RawGrade != nil || topicEvent.TopicPolicyVersion != "siyuanmemo-topic-initial-v1" || topicEvent.TopicInitialIntervalDays < 1 || topicEvent.TopicInitialIntervalDays > 15 {
 		t.Fatalf("pending topic event = %#v", topicEvent)
+	}
+}
+
+func TestItemAlphaOneHundredPendingIntroductionsAdvanceOnceWithoutSameDayReentry(t *testing.T) {
+	for fixture := 0; fixture < 100; fixture++ {
+		config, elementID, _ := projectionFailurePendingItemFixture(t)
+		engine, err := NewEngine(t.Context(), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeEvents := len(mustEvents(t, config))
+		started, err := engine.RunLearningAction(t.Context(), LearningAction{Kind: ActionStart})
+		if err != nil || started.Session == nil || started.Session.Confirmation == nil || started.Session.Confirmation.Stage != StagePending {
+			_ = engine.Close()
+			t.Fatalf("fixture %d Pending confirmation = %#v, err=%v", fixture, started, err)
+		}
+		if _, projectionErr := engine.ledger.Snapshot(elementID); !errors.Is(projectionErr, errProjectionNotFound) {
+			_ = engine.Close()
+			t.Fatalf("fixture %d Pending Item had a pre-grade projection: %v", fixture, projectionErr)
+		}
+		accepted, err := engine.RunLearningAction(t.Context(), LearningAction{Kind: ActionAcceptStageTransition, Stage: StagePending})
+		if err != nil || accepted.Session == nil || accepted.Session.Current == nil || accepted.Session.Current.ElementID != elementID ||
+			accepted.Session.Current.Answer != "" || accepted.Session.AnswerVisible {
+			_ = engine.Close()
+			t.Fatalf("fixture %d accept Pending = %#v, err=%v", fixture, accepted, err)
+		}
+		beforeRevealEvents := len(mustEvents(t, config))
+		if _, err = engine.RunLearningAction(t.Context(), LearningAction{Kind: ActionShowAnswer, ElementID: elementID}); err != nil {
+			_ = engine.Close()
+			t.Fatal(err)
+		}
+		if afterRevealEvents := len(mustEvents(t, config)); afterRevealEvents != beforeRevealEvents {
+			_ = engine.Close()
+			t.Fatalf("fixture %d Show Answer wrote events: before=%d after=%d", fixture, beforeRevealEvents, afterRevealEvents)
+		}
+		rawGrade := fixture % 6
+		eventID := fmt.Sprintf("item-alpha-pending-%03d", fixture)
+		graded, err := engine.RunLearningAction(t.Context(), LearningAction{Kind: ActionGradeItem, ElementID: elementID, RawGrade: &rawGrade, EventID: eventID})
+		if err != nil || !graded.ReviewAccepted || graded.EventID != eventID || graded.RawGrade == nil || *graded.RawGrade != rawGrade || graded.Passed == nil || *graded.Passed != (rawGrade >= 3) || graded.RatingMapping != "supermemo-grade-v1" {
+			_ = engine.Close()
+			t.Fatalf("fixture %d grade = %#v, err=%v", fixture, graded, err)
+		}
+		events := mustEvents(t, config)
+		if len(events) != beforeEvents+1 || countEventsByID(t, config, eventID) != 1 {
+			_ = engine.Close()
+			t.Fatalf("fixture %d event count before=%d after=%d identity=%d", fixture, beforeEvents, len(events), countEventsByID(t, config, eventID))
+		}
+		event := eventByID(t, events, eventID)
+		if event.Type != "introduceElement" || event.ReviewKind != "introduceItem" || (event.DrillEffect == "admit") != (rawGrade <= 3) {
+			_ = engine.Close()
+			t.Fatalf("fixture %d introduction event = %#v", fixture, event)
+		}
+		if rawGrade <= 3 {
+			if graded.Session == nil || graded.Session.Phase != PhaseConfirmation || graded.Session.Confirmation == nil || graded.Session.Confirmation.Stage != StageFinalDrill {
+				_ = engine.Close()
+				t.Fatalf("fixture %d Final Drill offer = %#v", fixture, graded.Session)
+			}
+			declined, declineErr := engine.RunLearningAction(t.Context(), LearningAction{Kind: ActionDeclineStageTransition, Stage: StageFinalDrill})
+			if declineErr != nil || declined.Session == nil || declined.Session.Status != SessionCompleted {
+				_ = engine.Close()
+				t.Fatalf("fixture %d decline Final Drill = %#v, err=%v", fixture, declined, declineErr)
+			}
+		} else if graded.Session == nil || graded.Session.Status != SessionCompleted {
+			_ = engine.Close()
+			t.Fatalf("fixture %d completed session = %#v", fixture, graded.Session)
+		}
+		restarted, err := engine.RunLearningAction(t.Context(), LearningAction{Kind: ActionStart})
+		if err != nil || restarted.Session == nil || restarted.Session.Current != nil ||
+			(restarted.Session.Status != SessionCompleted && (restarted.Session.Confirmation == nil || restarted.Session.Confirmation.Stage != StageFinalDrill)) {
+			_ = engine.Close()
+			t.Fatalf("fixture %d ordinary same-day restart = %#v, err=%v", fixture, restarted, err)
+		}
+		for _, recorded := range mustEvents(t, config) {
+			if recorded.Type == "drillElement" || recorded.ReviewKind == "drillGrade" {
+				_ = engine.Close()
+				t.Fatalf("fixture %d recorded a Drill Grade: %#v", fixture, recorded)
+			}
+		}
+		if err = engine.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
