@@ -19,7 +19,7 @@ A Feature specification may narrow its milestone but may not pull a deferred cap
 
 - **Engine Foundation** means Features 001 through 004. These backend tracers establish trustworthy Element, storage, scheduling, daily-learning, and HTML Topic creation authority, but they are not yet a production user workflow.
 - **Dogfood Alpha** means Features 005 through 008. It is the shortest sequence that lets one learner use SiYuanMemo inside the native SiYuan desktop shell for Topic capture, Topic learning, and basic Item review.
-- **Product v1** means the complete product boundary historically called the MVP in documents `0005`, `0006`, `0007`, and `0009`. It includes broader progressive-reading, Browser, note-integration, lifecycle, and required structural workflows. In those older documents, an unqualified MVP requirement must be read as a Product v1 requirement unless a Feature specification explicitly adopts it.
+- **Product v1** means the complete product boundary historically called the MVP in documents `0005`, `0006`, `0007`, and `0009`. It includes broader incremental-reading, Browser, note-integration, lifecycle, and required structural workflows. In those older documents, an unqualified MVP requirement must be read as a Product v1 requirement unless a Feature specification explicitly adopts it.
 
 Dogfood Alpha is a delivery checkpoint, not a replacement product architecture. Product v1 capabilities remain required unless a later confirmed decision removes them.
 
@@ -81,7 +81,7 @@ No deferred command appears as a disabled placeholder. A later Feature owns both
 After Feature 008, subsequent Features proceed through these Product v1 tracks in dependency order rather than copying an older numbered build list:
 
 1. **Native Asset Intake (Feature 009)**: local image import for HTML Topics and both Item sides, plus the minimum `.sme` reference awareness required to keep shared assets safe.
-2. **Progressive Reading**: durable Read Point, selection extraction, child Topic split, richer Topic tools, and the processing workflow.
+2. **Incremental Reading**: durable Read Point, selection extraction, child Topic split, richer Topic tools, and the processing workflow.
 3. **SiYuan Integration**: explicit block-to-Topic/Item commands, SendToNote, Element references and backlinks, plus the remaining asset and synchronization integration.
 4. **Browser And Lifecycle**: Element Browser views, Workset/subset learning, Inspector/Context, priority and ordering controls, and complete lifecycle actions.
 5. **Structural Editing**: rename, move, mixed sibling ordering, root/internal promotion or demotion, history snapshots, and recovery. Drag/drop remains a later enhancement unless a focused Feature explicitly adopts it.
