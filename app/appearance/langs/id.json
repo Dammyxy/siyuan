@@ -2,6 +2,8 @@
   "symemoNewItem": "Item Baru",
   "symemoQuestion": "Pertanyaan",
   "symemoAnswer": "Jawaban",
+  "symemoInsertImage": "Sisipkan gambar",
+  "symemoImageUploadFailed": "Gagal mengunggah gambar.",
   "symemoCreateItem": "Buat Item",
   "symemoItemPromptRequired": "Masukkan pertanyaan.",
   "symemoItemAnswerRequired": "Masukkan jawaban.",

@@ -1,6 +1,6 @@
 # SiYuanMemo Delivery Roadmap
 
-Date: 2026-07-31
+Date: 2026-08-01
 
 ## Decision And Authority
 
@@ -25,7 +25,7 @@ Dogfood Alpha is a delivery checkpoint, not a replacement product architecture. 
 
 ## Current Delivery Sequence
 
-| Feature | Milestone | Minimum user-visible gate | Status on 2026-07-31 |
+| Feature | Milestone | Minimum user-visible gate | Status on 2026-08-01 |
 |---|---|---|---|
 | 001 | Item Learning Core | A prepared Item can complete a durable Start, Show Answer, and Grade loop through the backend. | Complete |
 | 002 | Element Storage And Read-Only Tree | Authoritative dual-tree Elements and scheduling history can be read, rebuilt, and recovered without making the disposable index authoritative. | Complete |
@@ -33,11 +33,11 @@ Dogfood Alpha is a delivery checkpoint, not a replacement product architecture. 
 | 004 | Create HTML Topic Tracer | A caller can create a safe HTML-backed Topic through the versioned cleaning and storage path. | Complete |
 | 005 | Native Read Alpha | A learner can activate the native Elements dock, navigate the complete Engine-provided tree, and read a supported HTML Topic in a native Element tab. | Complete |
 | 006 | Capture/Edit Alpha | A learner can immediately create an empty HTML Topic, edit it in the real Topic editor, automatically save it, and use normal paste, paste as plain text, and paste as HTML from the editor component context menu. | Complete |
-| 007 | Topic Learning Alpha | A learner can start a real Topic learning session in the native UI and advance Topics with `Next`, with accepted scheduling truth surviving restart through the existing Engine. | Implementation complete; source-bound desktop acceptance pending |
-| 008 | Item Alpha | A learner can create a basic manual Q/A Item and complete its prompt, Show Answer, and raw grade `0..5` review in the native UI. | Specification drafted; planning next |
-| 009 | Native Asset Intake | A learner can paste a screenshot, drop an image, or choose a local image in an HTML Topic and retain it as a SiYuan-managed `assets/...` reference that native unused-asset cleanup does not misclassify. | Planned |
+| 007 | Topic Learning Alpha | A learner can start a real Topic learning session in the native UI and advance Topics with `Next`, with accepted scheduling truth surviving restart through the existing Engine. | Complete |
+| 008 | Item Alpha | A learner can create a basic manual Q/A Item and complete its prompt, Show Answer, and raw grade `0..5` review in the native UI. | Complete |
+| 009 | Native Asset Intake | A learner can paste a screenshot, drop an image, or choose a local image while authoring an HTML Topic or either side of an Item, retain only SiYuan-managed `assets/...` references in `.sme` authority, and keep referenced assets out of native unused-asset cleanup. | Complete |
 
-The Feature 005 specification and task set remain unchanged by this roadmap. Features 005 and 006 are complete. Feature 007 implementation, automated verification, and independent review are complete, while its source-bound real-desktop acceptance matrix remains the only open gate. Feature 008 now has a drafted specification at `specs/008-item-alpha`; planning may proceed without expanding Feature 007, but Dogfood Alpha is not declared complete until both the Feature 007 desktop gate and the Feature 008 Item workflow pass. Feature 009 is the first post-Alpha dependency and adds only the shared-asset behavior required for safe local image capture.
+Features 005 through 008 are complete, including the source-bound Feature 007 and Feature 008 desktop acceptance matrices. Dogfood Alpha is complete. Feature 009 is the first post-Alpha dependency and adds only the shared-asset behavior required for safe local image capture in HTML Topics and Items.
 
 ## Hard Scope Gates
 
@@ -59,9 +59,9 @@ Feature 008 adds the smallest complete Item loop: basic manual Q/A creation, pro
 
 ### Feature 009: Native Asset Intake
 
-Feature 009 adds the smallest safe `AssetStore` slice. Screenshot paste, image drop, and local image selection reuse SiYuan's native asset import, naming, validation, and shared `workspace/data/assets/` storage, then persist only normalized `assets/...` references in Topic HTML. Asset resolution rejects traversal and unsupported local schemes. SiYuan's unused-asset discovery and cleanup must count references from authoritative `.sme` payloads before the workflow is accepted, so a native cleanup cannot delete a still-referenced SiYuanMemo asset.
+Feature 009 adds the smallest safe `AssetStore` slice. Screenshot paste, image drop, and local image selection reuse SiYuan's native asset import, naming, validation, and shared `workspace/data/assets/` storage, then persist only normalized `assets/...` references in Topic HTML and Item question/answer material. Asset resolution rejects traversal and unsupported local schemes. SiYuan's unused-asset discovery and cleanup must count references from authoritative `.sme` payloads before the workflow is accepted, so a native cleanup cannot delete a still-referenced SiYuanMemo asset.
 
-Feature 009 does not add an asset registry UI, remote-image batch download, broad media support, export rewriting, or complete reference and synchronization integration. Those remain focused Product v1 work.
+The validated Feature 009 design uses restricted HTML prompt/answer material for Item images, with multiple ordered images at arbitrary text positions. It reuses SiYuan's native upload, validation, naming, deduplication, shared asset storage, and cleanup behavior while retaining the existing `.sme` compare-and-swap guard for whole-payload saves. Feature 009 does not add an asset registry UI, remote-image batch download, broad media support, general Item formatting unrelated to image placement, export rewriting, or complete reference and synchronization integration. Those remain focused Product v1 work.
 
 ## Work That Must Not Block Feature 007
 
@@ -80,7 +80,7 @@ No deferred command appears as a disabled placeholder. A later Feature owns both
 
 After Feature 008, subsequent Features proceed through these Product v1 tracks in dependency order rather than copying an older numbered build list:
 
-1. **Native Asset Intake (Feature 009)**: local image import and the minimum `.sme` reference awareness required to keep shared assets safe.
+1. **Native Asset Intake (Feature 009)**: local image import for HTML Topics and both Item sides, plus the minimum `.sme` reference awareness required to keep shared assets safe.
 2. **Progressive Reading**: durable Read Point, selection extraction, child Topic split, richer Topic tools, and the processing workflow.
 3. **SiYuan Integration**: explicit block-to-Topic/Item commands, SendToNote, Element references and backlinks, plus the remaining asset and synchronization integration.
 4. **Browser And Lifecycle**: Element Browser views, Workset/subset learning, Inspector/Context, priority and ordering controls, and complete lifecycle actions.

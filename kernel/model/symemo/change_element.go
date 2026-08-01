@@ -76,7 +76,10 @@ func (engine *Engine) changeElement(ctx context.Context, command ChangeElementCo
 		ChangeAccepted:          true,
 	}
 	if plan.field == ChangedElementItemQA {
-		result.ItemQA = &CanonicalItemQA{Prompt: plan.prompt, Answer: plan.answer, ContentRevision: plan.currentRevision}
+		result.ItemQA = &CanonicalItemQA{
+			Prompt: plan.prompt, Answer: plan.answer, ContentRevision: plan.currentRevision,
+			CleaningPolicyVersion: plan.cleaningPolicy,
+		}
 	}
 	if (plan.field == ChangedElementItemQA && plan.prompt == plan.currentPrompt && plan.answer == plan.currentAnswer) ||
 		(plan.field != ChangedElementItemQA && plan.canonicalValue == plan.currentValue) {
@@ -198,11 +201,20 @@ func (engine *Engine) planChangeElement(command ChangeElementCommand) (changeEle
 		if latestElement.Type != "item" || latestElement.Payload.Kind != "qa" {
 			return changeElementPlan{}, changeElementDomainError(ErrUnsupportedOperation, "Element is not writable Q/A Item content", shape.elementID, shape.field, false, false, nil)
 		}
+		prompt, promptErr := canonicalizeItemHTML(shape.prompt)
+		if promptErr != nil {
+			return changeElementPlan{}, changeElementDomainError(ErrInvalidChangeCommand, "Item prompt HTML is invalid", shape.elementID, shape.field, false, false, promptErr)
+		}
+		answer, answerErr := canonicalizeItemHTML(shape.answer)
+		if answerErr != nil {
+			return changeElementPlan{}, changeElementDomainError(ErrInvalidChangeCommand, "Item answer HTML is invalid", shape.elementID, shape.field, false, false, answerErr)
+		}
 		plan.currentPrompt = latestElement.Payload.Prompt
 		plan.currentAnswer = latestElement.Payload.Answer
 		plan.currentRevision = latestElement.Payload.Revision
-		plan.prompt = shape.prompt
-		plan.answer = shape.answer
+		plan.prompt = prompt
+		plan.answer = answer
+		plan.cleaningPolicy = itemHTMLCleaningPolicyVersion
 	}
 	return plan, nil
 }

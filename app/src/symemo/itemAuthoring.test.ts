@@ -80,6 +80,32 @@ describe("ItemAuthoringSession aggregate draft", () => {
         assert.equal(session.snapshot().acknowledgedGeneration, 3);
     });
 
+    it("submits prompt and answer HTML as one revision-protected pair", async () => {
+        const calls: Array<{revision: string; prompt: string; answer: string}> = [];
+        const prompt = '<p>Question<img src="assets/prompt.png"></p>';
+        const answer = '<p>Answer<img src="assets/answer.png"></p>';
+        const session = new ItemAuthoringSession({
+            elementId: "item-id",
+            getItemAuthoring: async () => loaded(prompt, answer, "rev-html-1"),
+            saveItemQA: async (_id, revision, nextPrompt, nextAnswer) => {
+                calls.push({revision, prompt: nextPrompt, answer: nextAnswer});
+                return accepted(nextPrompt, nextAnswer, "rev-html-2");
+            },
+            debounceMs: -1,
+        });
+        await session.load();
+        session.editPrompt('<p>Edited question<img src="assets/next-prompt.png"></p>');
+        session.editAnswer('<p>Edited answer<img src="assets/next-answer.png"></p>');
+
+        assert.deepEqual(await session.flush("tab-close"), {allowed: true});
+        assert.deepEqual(calls, [{
+            revision: "rev-html-1",
+            prompt: '<p>Edited question<img src="assets/next-prompt.png"></p>',
+            answer: '<p>Edited answer<img src="assets/next-answer.png"></p>',
+        }]);
+        assert.equal(session.snapshot().revision, "rev-html-2");
+    });
+
     it("blocks flush for an invalid pair without discarding either local field", async () => {
         let saves = 0;
         const session = new ItemAuthoringSession({

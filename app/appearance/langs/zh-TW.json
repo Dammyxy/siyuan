@@ -2,6 +2,8 @@
   "symemoNewItem": "新增記憶項",
   "symemoQuestion": "問題",
   "symemoAnswer": "答案",
+  "symemoInsertImage": "插入圖片",
+  "symemoImageUploadFailed": "圖片上傳失敗。",
   "symemoCreateItem": "建立記憶項",
   "symemoItemPromptRequired": "請輸入問題。",
   "symemoItemAnswerRequired": "請輸入答案。",

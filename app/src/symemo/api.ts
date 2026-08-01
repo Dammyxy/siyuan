@@ -17,6 +17,8 @@ import {
     SessionCallResult,
     TopicNextCallResult,
     ElementTreeResult,
+    CanonicalItemQA,
+    ItemAuthoringView,
     ItemAuthoringResult,
     ItemGradeCallResult,
     ItemQAChangeResult,
@@ -703,14 +705,18 @@ export const getItemAuthoring = async (elementId: string): Promise<ItemAuthoring
         !hasString(data, "contentRevision")) {
         return itemAuthoringFailure("response", true, "response");
     }
+    const authoring: ItemAuthoringView = {
+        elementId,
+        prompt: data.prompt,
+        answer: data.answer,
+        contentRevision: getString(data, "contentRevision"),
+    };
+    if (hasString(data, "cleaningPolicyVersion")) {
+        authoring.cleaningPolicyVersion = getString(data, "cleaningPolicyVersion");
+    }
     return {
         ok: true,
-        authoring: {
-            elementId,
-            prompt: data.prompt,
-            answer: data.answer,
-            contentRevision: getString(data, "contentRevision"),
-        },
+        authoring,
     };
 };
 
@@ -720,19 +726,24 @@ const decodeAcceptedItemQAChange = (value: unknown): AcceptedItemQAChange | unde
         typeof value.itemQA.prompt !== "string" || value.itemQA.prompt.trim().length === 0 ||
         typeof value.itemQA.answer !== "string" || value.itemQA.answer.trim().length === 0 ||
         value.itemQA.contentRevision !== value.revision || typeof value.changed !== "boolean" ||
-        value.changeAccepted !== true || hasOwn(value, "canonicalValue")) {
+        value.changeAccepted !== true ||
+        (hasOwn(value, "canonicalValue") && value.canonicalValue !== "")) {
         return undefined;
+    }
+    const itemQA: CanonicalItemQA = {
+        prompt: value.itemQA.prompt,
+        answer: value.itemQA.answer,
+        contentRevision: getString(value, "revision"),
+    };
+    if (hasString(value.itemQA, "cleaningPolicyVersion")) {
+        itemQA.cleaningPolicyVersion = getString(value.itemQA, "cleaningPolicyVersion");
     }
     return {
         kind: "SaveItemQA",
         elementId: getString(value, "elementId"),
         changedField: "itemQA",
         revision: getString(value, "revision"),
-        itemQA: {
-            prompt: value.itemQA.prompt,
-            answer: value.itemQA.answer,
-            contentRevision: getString(value, "revision"),
-        },
+        itemQA,
         changed: value.changed,
         changeAccepted: true,
     };

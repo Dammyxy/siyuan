@@ -59,6 +59,7 @@ export interface TopicHtmlEditorAdapter {
     execFormatting?(action: TopicFormattingAction): void;
     queryFormatting?(): TopicFormattingState;
     insertHTML?(html: string): void;
+    insertImageFiles?(files: File[]): Promise<import("./assetStore").AssetImportResult>;
     captureSelectionBookmark?(): unknown;
     restoreSelectionBookmark?(bookmark: unknown): boolean;
     replaceHTML?(html: string): void;
@@ -74,6 +75,7 @@ export interface TopicHtmlEditorFactoryContext {
     onDirty(html: string): void;
     onCommandStateChange(): void;
     onSerializationFailure(reason: "identity-invalid" | "serialization-failed"): void;
+    onImageImportFailure?: (result: import("./assetStore").AssetImportResult) => void;
 }
 
 export type TopicHtmlEditorFactory =
@@ -219,6 +221,7 @@ export class TopicHtmlSurface {
                 this.serializationFailure = reason;
                 this.updateStatus();
             },
+            onImageImportFailure: (result) => this.reportImageImportFailure(result),
         });
         if (!this.isCurrent(epoch)) {
             editor.destroy();
@@ -363,6 +366,9 @@ export class TopicHtmlSurface {
         toolbar.append(
             this.createToolbarButton("undo", "iconUndo", ["undo"], () => this.executeFormatting({command: "undo"})),
             this.createToolbarButton("redo", "iconRedo", ["redo"], () => this.executeFormatting({command: "redo"})),
+            this.createToolbarButton("image" as TopicFormattingAction["command"], "iconImage", ["image", "insertImage"], (button) => {
+                this.openImagePicker(button);
+            }),
             this.createHeadingControl(),
             this.createToolbarButton("bold", "iconBold", ["bold"], () => this.executeFormatting({command: "bold"})),
             this.createToolbarButton("italic", "iconItalic", ["italic"], () => this.executeFormatting({command: "italic"})),
@@ -576,6 +582,7 @@ export class TopicHtmlSurface {
         };
         setButtonState("undo", Boolean(state?.undoEnabled));
         setButtonState("redo", Boolean(state?.redoEnabled));
+        setButtonState("image", mounted);
         setButtonState("bold", mounted, Boolean(state?.boldActive));
         setButtonState("italic", mounted, Boolean(state?.italicActive));
         setButtonState("bulletList", mounted, Boolean(state?.bulletListActive));
@@ -773,9 +780,45 @@ export class TopicHtmlSurface {
             return;
         }
         this.preventDefault(event);
+        const files = Array.from(event.clipboardData?.files ?? []) as File[];
+        if (files.length > 0) {
+            const result = await this.editor.insertImageFiles?.(files);
+            this.reportImageImportFailure(result);
+            return;
+        }
         const epoch = this.operationEpoch;
         const bookmark = this.editor.captureSelectionBookmark?.();
         await this.applyPaste(projectClipboardEvent(event), "paste", bookmark, epoch);
+    }
+
+    private openImagePicker(anchor: HTMLElement): void {
+        if (!this.editor || this.interactionBlocked || this.destroyed) return;
+        const input = document.createElement("input");
+        input.type = "file";
+        input.setAttribute("type", "file");
+        input.accept = "image/*";
+        input.setAttribute("accept", "image/*");
+        input.multiple = true;
+        input.setAttribute("multiple", "multiple");
+        input.setAttribute("aria-hidden", "true");
+        input.style.display = "none";
+        input.addEventListener("change", (event) => {
+            const target = event.target as HTMLInputElement | null;
+            const files = Array.from(target?.files ?? input.files ?? []) as File[];
+            if (files.length > 0) {
+                void this.editor?.insertImageFiles?.(files).then((result) => {
+                    this.reportImageImportFailure(result);
+                });
+            }
+            input.remove();
+        });
+        anchor.parentElement?.append(input);
+        (input as HTMLInputElement & {click?: () => void}).click?.();
+    }
+
+    private reportImageImportFailure(result?: import("./assetStore").AssetImportResult): void {
+        if (!result || result.ok || this.destroyed || !this.statusElement) return;
+        this.statusElement.textContent = this.languageAny(["symemoImageUploadFailed"]) || "Image upload failed.";
     }
 
     private async applyPaste(
@@ -936,6 +979,7 @@ export class TopicHtmlSurface {
             onDirty: context.onDirty,
             onCommandStateChange: context.onCommandStateChange,
             onSerializationFailure: context.onSerializationFailure,
+            onImageImportFailure: context.onImageImportFailure,
         });
         return {
             mount: () => adapter.mount(),
@@ -944,6 +988,7 @@ export class TopicHtmlSurface {
             execFormatting: (action) => adapter.execFormatting(action),
             queryFormatting: () => adapter.queryFormatting(),
             insertHTML: (html) => adapter.insertHTML(html),
+            insertImageFiles: (files) => adapter.insertImageFiles(files),
             captureSelectionBookmark: () => adapter.captureSelection(),
             restoreSelectionBookmark: (bookmark) => adapter.restoreSelection(bookmark),
             replaceHTML: (html) => adapter.replaceHTML(html),

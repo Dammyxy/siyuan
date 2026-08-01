@@ -2,6 +2,8 @@
   "symemoNewItem": "Nieuw item",
   "symemoQuestion": "Vraag",
   "symemoAnswer": "Antwoord",
+  "symemoInsertImage": "Afbeelding invoegen",
+  "symemoImageUploadFailed": "Afbeelding uploaden mislukt.",
   "symemoCreateItem": "Item maken",
   "symemoItemPromptRequired": "Voer een vraag in.",
   "symemoItemAnswerRequired": "Voer een antwoord in.",

@@ -1,5 +1,9 @@
 import {getItemAuthoring, saveItemQA} from "./api";
 import {ItemAuthoringSession, ItemAuthoringSnapshot} from "./itemAuthoring";
+import {AssetImportResult, importImages} from "./assetStore";
+import {filterItemHTMLIngress} from "./itemHtmlIngress";
+import type {TopicDomParser} from "./topicDom";
+import {captureItemEditorSelection, insertItemHTMLAtSelection, ItemEditorSelection} from "./itemAuthoring";
 import type {ElementDetailView, ModelTransitionReason, ModelTransitionResult} from "./types";
 
 export interface ItemAuthoringSurfaceOptions {
@@ -7,6 +11,8 @@ export interface ItemAuthoringSurfaceOptions {
     language?: (key: string) => string;
     debounceMs?: number;
     onTransitionReadyChange?: (ready: boolean) => void;
+    uploadImages?: (files: File[], selection: unknown) => Promise<AssetImportResult>;
+    topicDomParser?: TopicDomParser;
 }
 
 const defaultLanguage = (key: string): string => window.siyuan?.languages?.[key] || "";
@@ -28,6 +34,10 @@ export class ItemAuthoringSurface {
     private session?: ItemAuthoringSession;
     private promptElement?: HTMLTextAreaElement;
     private answerElement?: HTMLTextAreaElement;
+    private promptEditor?: HTMLElement;
+    private answerEditor?: HTMLElement;
+    private promptImageButton?: HTMLButtonElement;
+    private answerImageButton?: HTMLButtonElement;
     private statusElement?: HTMLElement;
     private actionsElement?: HTMLElement;
     private detail?: ElementDetailView;
@@ -36,9 +46,14 @@ export class ItemAuthoringSurface {
     private interactionBlocked = false;
     private epoch = 0;
     private lastReady?: boolean;
+    private readonly uploadImages: NonNullable<ItemAuthoringSurfaceOptions["uploadImages"]>;
 
     constructor(private readonly options: ItemAuthoringSurfaceOptions) {
         this.language = options.language || defaultLanguage;
+        this.uploadImages = options.uploadImages ?? ((files, selection) => importImages(
+            files,
+            selection && typeof selection === "object" ? selection as Record<string, unknown> : {},
+        ));
     }
 
     public async mount(detail: ElementDetailView): Promise<void> {
@@ -86,7 +101,7 @@ export class ItemAuthoringSurface {
     }
 
     public focus(): void {
-        this.promptElement?.focus();
+        (this.promptEditor || this.promptElement)?.focus();
     }
 
     public setWindowBarrier(active: boolean): void {
@@ -104,6 +119,10 @@ export class ItemAuthoringSurface {
         this.session = undefined;
         this.promptElement = undefined;
         this.answerElement = undefined;
+        this.promptEditor = undefined;
+        this.answerEditor = undefined;
+        this.promptImageButton = undefined;
+        this.answerImageButton = undefined;
         this.statusElement = undefined;
         this.actionsElement = undefined;
         this.options.container.replaceChildren();
@@ -118,6 +137,10 @@ export class ItemAuthoringSurface {
         this.options.container.replaceChildren();
         this.promptElement = undefined;
         this.answerElement = undefined;
+        this.promptEditor = undefined;
+        this.answerEditor = undefined;
+        this.promptImageButton = undefined;
+        this.answerImageButton = undefined;
         this.actionsElement = undefined;
         const status = document.createElement("div");
         status.setAttribute("data-role", "status");
@@ -132,6 +155,10 @@ export class ItemAuthoringSurface {
         this.options.container.replaceChildren();
         this.promptElement = undefined;
         this.answerElement = undefined;
+        this.promptEditor = undefined;
+        this.answerEditor = undefined;
+        this.promptImageButton = undefined;
+        this.answerImageButton = undefined;
         const root = document.createElement("div");
         root.className = "symemo-item-authoring fn__flex fn__flex-column fn__flex-1";
         const status = document.createElement("div");
@@ -160,6 +187,10 @@ export class ItemAuthoringSurface {
         this.options.container.replaceChildren();
         this.promptElement = undefined;
         this.answerElement = undefined;
+        this.promptEditor = undefined;
+        this.answerEditor = undefined;
+        this.promptImageButton = undefined;
+        this.answerImageButton = undefined;
         const root = document.createElement("div");
         root.className = "symemo-item-authoring fn__flex fn__flex-column fn__flex-1";
         if (this.readOnly) {
@@ -174,9 +205,32 @@ export class ItemAuthoringSurface {
             const prompt = this.createTextarea("prompt", promptId, snapshot.localPrompt);
             const answerLabel = this.createLabel("symemoAnswer", "answer-label", answerId);
             const answer = this.createTextarea("answer", answerId, snapshot.localAnswer);
-            root.append(promptLabel, prompt, answerLabel, answer);
+            const promptHTML = this.isHTMLMaterial(snapshot.localPrompt)
+                ? this.createHTMLField("prompt", `${promptId}-editor`, snapshot.localPrompt)
+                : undefined;
+            const answerHTML = this.isHTMLMaterial(snapshot.localAnswer)
+                ? this.createHTMLField("answer", `${answerId}-editor`, snapshot.localAnswer)
+                : undefined;
+            const promptImageButton = promptHTML ? this.createImagePicker("prompt", promptHTML) : undefined;
+            const answerImageButton = answerHTML ? this.createImagePicker("answer", answerHTML) : undefined;
+            if (promptHTML) {
+                prompt.setAttribute("hidden", "true");
+                root.append(promptLabel, promptHTML, promptImageButton!, prompt);
+            } else {
+                root.append(promptLabel, prompt);
+            }
+            if (answerHTML) {
+                answer.setAttribute("hidden", "true");
+                root.append(answerLabel, answerHTML, answerImageButton!, answer);
+            } else {
+                root.append(answerLabel, answer);
+            }
             this.promptElement = prompt;
             this.answerElement = answer;
+            this.promptEditor = promptHTML;
+            this.answerEditor = answerHTML;
+            this.promptImageButton = promptImageButton;
+            this.answerImageButton = answerImageButton;
         }
         const status = document.createElement("div");
         status.setAttribute("data-role", "status");
@@ -217,13 +271,102 @@ export class ItemAuthoringSurface {
         return textarea;
     }
 
+    private createHTMLField(role: "prompt" | "answer", id: string, value: string): HTMLElement {
+        const editor = document.createElement("div");
+        editor.className = "b3-text-field fn__block symemo-item-authoring__html-field";
+        editor.setAttribute("data-role", `${role}-editor`);
+        editor.setAttribute("id", id);
+        editor.setAttribute("contenteditable", "true");
+        editor.setAttribute("spellcheck", "true");
+        editor.innerHTML = filterItemHTMLIngress(value, this.options.topicDomParser);
+        editor.addEventListener("input", () => {
+            if (this.interactionBlocked) return;
+            if (role === "prompt") this.session?.editPrompt(editor.innerHTML);
+            else this.session?.editAnswer(editor.innerHTML);
+        });
+        editor.addEventListener("paste", (event) => {
+            const files = Array.from((event as ClipboardEvent).clipboardData?.files ?? []) as File[];
+            if (files.length === 0) return;
+            const selection = captureItemEditorSelection(editor);
+            event.preventDefault();
+            void this.insertImageFiles(role, editor, files, selection);
+        });
+        editor.addEventListener("drop", (event) => {
+            const files = Array.from((event as DragEvent).dataTransfer?.files ?? []) as File[];
+            if (files.length === 0) return;
+            const selection = captureItemEditorSelection(editor);
+            event.preventDefault();
+            void this.insertImageFiles(role, editor, files, selection);
+        });
+        return editor;
+    }
+
+    private createImagePicker(role: "prompt" | "answer", editor: HTMLElement): HTMLButtonElement {
+        const button = document.createElement("button");
+        button.className = "b3-button b3-button--outline symemo-item-authoring__image-button";
+        button.setAttribute("type", "button");
+        button.setAttribute("data-action", `insert-${role}-image`);
+        button.setAttribute("aria-label", this.language("symemoInsertImage") || "Insert image");
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+        use.setAttribute("href", "#iconImage");
+        use.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", "#iconImage");
+        svg.append(use);
+        button.append(svg);
+        button.addEventListener("click", () => {
+            const selection = captureItemEditorSelection(editor);
+            const input = document.createElement("input");
+            input.type = "file";
+            input.accept = "image/*";
+            input.multiple = true;
+            input.setAttribute("type", "file");
+            input.setAttribute("accept", "image/*");
+            input.setAttribute("multiple", "multiple");
+            input.style.display = "none";
+            input.addEventListener("change", (event) => {
+                const target = event.target as HTMLInputElement | null;
+                const files = Array.from(target?.files ?? input.files ?? []) as File[];
+                if (files.length > 0) void this.insertImageFiles(role, editor, files, selection);
+                input.remove();
+            });
+            button.parentElement?.append(input);
+            (input as HTMLInputElement & {click?: () => void}).click?.();
+        });
+        return button;
+    }
+
+    private async insertImageFiles(
+        role: "prompt" | "answer",
+        editor: HTMLElement,
+        files: File[],
+        selection?: ItemEditorSelection,
+    ): Promise<void> {
+        const result = await this.uploadImages(files, selection || {});
+        if (!result.ok) {
+            if (this.statusElement) {
+                this.statusElement.textContent = this.language("symemoImageUploadFailed") || "Image upload failed.";
+            }
+            return;
+        }
+        if (this.destroyed || this.interactionBlocked) return;
+        const html = result.references.map((reference) => `<img src="${reference}" alt="">`).join("");
+        insertItemHTMLAtSelection(editor, html, selection);
+        if (role === "prompt") this.session?.editPrompt(editor.innerHTML);
+        else this.session?.editAnswer(editor.innerHTML);
+    }
+
+    private isHTMLMaterial(value: string): boolean {
+        return /<[a-z][\s\S]*>/i.test(value);
+    }
+
     private createReadOnlySection(key: string, role: string, value: string): HTMLElement {
         const section = document.createElement("section");
         const heading = document.createElement("h2");
         heading.textContent = this.language(key);
         const content = document.createElement("div");
         content.setAttribute("data-role", role);
-        content.textContent = value;
+        if (this.isHTMLMaterial(value)) content.innerHTML = filterItemHTMLIngress(value, this.options.topicDomParser);
+        else content.textContent = value;
         section.append(heading, content);
         return section;
     }
@@ -237,6 +380,12 @@ export class ItemAuthoringSurface {
         }
         if (this.answerElement && this.answerElement.value !== snapshot.localAnswer) {
             this.answerElement.value = snapshot.localAnswer;
+        }
+        if (this.promptEditor && this.promptEditor.innerHTML !== snapshot.localPrompt) {
+            this.promptEditor.innerHTML = filterItemHTMLIngress(snapshot.localPrompt, this.options.topicDomParser);
+        }
+        if (this.answerEditor && this.answerEditor.innerHTML !== snapshot.localAnswer) {
+            this.answerEditor.innerHTML = filterItemHTMLIngress(snapshot.localAnswer, this.options.topicDomParser);
         }
         if (this.statusElement) {
             this.statusElement.textContent = this.readOnly
@@ -281,11 +430,24 @@ export class ItemAuthoringSurface {
     }
 
     private updateInteraction(): void {
-        for (const element of [this.promptElement, this.answerElement]) {
+        const blocked = this.interactionBlocked || this.session?.snapshot().state === "acceptanceUnknown" ||
+            this.session?.snapshot().state === "acceptedRecovering";
+        for (const element of [this.promptElement, this.answerElement, this.promptEditor, this.answerEditor,
+            this.promptImageButton, this.answerImageButton]) {
             if (!element) continue;
-            if (this.interactionBlocked || this.session?.snapshot().state === "acceptanceUnknown" ||
-                this.session?.snapshot().state === "acceptedRecovering") element.setAttribute("disabled", "disabled");
-            else element.removeAttribute("disabled");
+            if (blocked) {
+                element.setAttribute("disabled", "disabled");
+                element.setAttribute("aria-disabled", "true");
+                if (element === this.promptEditor || element === this.answerEditor) {
+                    element.setAttribute("contenteditable", "false");
+                }
+            } else {
+                element.removeAttribute("disabled");
+                element.removeAttribute("aria-disabled");
+                if (element === this.promptEditor || element === this.answerEditor) {
+                    element.setAttribute("contenteditable", "true");
+                }
+            }
         }
         this.actionsElement?.querySelectorAll("button").forEach((button) => {
             if (this.interactionBlocked) button.setAttribute("disabled", "disabled");

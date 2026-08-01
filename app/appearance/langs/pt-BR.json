@@ -2,6 +2,8 @@
   "symemoNewItem": "Novo item",
   "symemoQuestion": "Pergunta",
   "symemoAnswer": "Resposta",
+  "symemoInsertImage": "Inserir imagem",
+  "symemoImageUploadFailed": "Falha ao enviar a imagem.",
   "symemoCreateItem": "Criar item",
   "symemoItemPromptRequired": "Digite uma pergunta.",
   "symemoItemAnswerRequired": "Digite uma resposta.",

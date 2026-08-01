@@ -2,6 +2,8 @@
   "symemoNewItem": "新建记忆项",
   "symemoQuestion": "问题",
   "symemoAnswer": "答案",
+  "symemoInsertImage": "插入图片",
+  "symemoImageUploadFailed": "图片上传失败。",
   "symemoCreateItem": "创建记忆项",
   "symemoItemPromptRequired": "请输入问题。",
   "symemoItemAnswerRequired": "请输入答案。",

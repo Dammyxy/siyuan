@@ -17,6 +17,11 @@ import {
     topicDomNodesFromParent,
     walkTopicDomElements,
 } from "./topicDom";
+import {
+    AssetImportResult,
+    AssetSelectionBookmark,
+    importImages,
+} from "./assetStore";
 
 export interface TinyMceEditorLike {
     id?: string;
@@ -84,7 +89,9 @@ export interface TinyMceTopicEditorAdapterOptions {
     onDirty?: (html: string) => void;
     onCommandStateChange?: () => void;
     onSerializationFailure?: (reason: "identity-invalid" | "serialization-failed") => void;
+    onImageImportFailure?: (result: AssetImportResult) => void;
     topicDomParser?: TopicDomParser;
+    uploadImages?: (files: File[], selection: unknown) => Promise<AssetImportResult>;
 }
 
 const ADDRESSABLE_ATTRIBUTES = "id|style|data-symemo-node-id|data-symemo-client-node-key";
@@ -148,6 +155,7 @@ export class TinyMceTopicEditorAdapter {
     private readonly renderFormula?: (element: HTMLElement) => void;
     private readonly onDirty?: (html: string) => void;
     private readonly parser: TopicDomParser;
+    private readonly uploadImages: NonNullable<TinyMceTopicEditorAdapterOptions["uploadImages"]>;
     private readonly removedEditors = new WeakSet<object>();
     private readonly activeAssignments = new Map<string, string>();
     private readonly retiredClientKeys = new Set<string>();
@@ -159,6 +167,8 @@ export class TinyMceTopicEditorAdapter {
     private removeCount = 0;
     private listenersInstalled = false;
     private suppressDirty = false;
+    private interactive = true;
+    private interactionEpoch = 0;
     private sameAdapterMoveToken: HTMLElement | undefined;
 
     constructor(private readonly options: TinyMceTopicEditorAdapterOptions) {
@@ -167,6 +177,10 @@ export class TinyMceTopicEditorAdapter {
         this.renderFormula = options.renderFormula;
         this.onDirty = options.onDirty;
         this.parser = options.topicDomParser ?? browserTopicDomParser;
+        this.uploadImages = options.uploadImages ?? ((files, selection) => importImages(
+            files,
+            selection && typeof selection === "object" ? selection as AssetSelectionBookmark : {},
+        ));
     }
 
     public get removalCount() {
@@ -367,6 +381,19 @@ export class TinyMceTopicEditorAdapter {
         this.afterUserMutation();
     }
 
+    public async insertImageFiles(files: File[]): Promise<AssetImportResult> {
+        const epoch = this.epoch;
+        const interactionEpoch = this.interactionEpoch;
+        const selection = this.captureSelection();
+        const result = await this.uploadImages(files, selection);
+        if (!result.ok || this.destroyed || !this.editor || !this.interactive || this.epoch !== epoch ||
+            this.interactionEpoch !== interactionEpoch) return result;
+        if (this.restoreSelection(selection) === false && selection !== undefined) return result;
+        const imageHTML = result.references.map((reference) => `<img src="${reference}" alt="">`).join("");
+        if (imageHTML) this.insertHTML(imageHTML);
+        return result;
+    }
+
     public insertPlainText(text: string): void {
         const html = text.split(/\r\n|\r|\n/).map((line) => `<p>${line
             .replace(/&/g, "&amp;")
@@ -434,6 +461,8 @@ export class TinyMceTopicEditorAdapter {
 
     public setInteractive(enabled: boolean): void {
         if (this.destroyed) return;
+        if (this.interactive !== enabled) this.interactionEpoch++;
+        this.interactive = enabled;
         this.options.host.setAttribute("contenteditable", enabled ? "true" : "false");
         this.editor?.mode?.set?.(enabled ? "design" : "readonly");
         if (!enabled) this.sameAdapterMoveToken = undefined;
@@ -661,7 +690,16 @@ export class TinyMceTopicEditorAdapter {
     private readonly handleDrop = (event: DragEvent): void => {
         event.preventDefault();
         event.stopPropagation();
-        if (this.isControlledMove(event)) this.performControlledMove(event);
+        if (this.isControlledMove(event)) {
+            this.performControlledMove(event);
+        } else {
+            const files = Array.from(event.dataTransfer?.files ?? []) as File[];
+            if (files.length > 0) {
+                void this.insertImageFiles(files).then((result) => {
+                    if (!result.ok) this.options.onImageImportFailure?.(result);
+                });
+            }
+        }
         this.sameAdapterMoveToken = undefined;
     };
 

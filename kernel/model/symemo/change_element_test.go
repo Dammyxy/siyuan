@@ -786,7 +786,9 @@ func TestSaveItemQAChangedAndNoOpUseOneAggregateRevision(t *testing.T) {
 	if changed.Kind != ChangeElementSaveItemQA || changed.ChangedField != ChangedElementItemQA || !changed.Changed || !changed.ChangeAccepted || changed.ItemQA == nil || changed.Revision != changed.ItemQA.ContentRevision || changed.Revision == item.Payload.Revision || changed.CanonicalValue != "" {
 		t.Fatalf("changed result = %#v", changed)
 	}
-	if changed.ItemQA.Prompt != "  Updated prompt\n第二行  " || changed.ItemQA.Answer != "  Updated answer\n第二行  " {
+	wantPrompt, _ := canonicalizeItemHTML("  Updated prompt\n第二行  ")
+	wantAnswer, _ := canonicalizeItemHTML("  Updated answer\n第二行  ")
+	if changed.ItemQA.Prompt != wantPrompt || changed.ItemQA.Answer != wantAnswer {
 		t.Fatalf("changed pair = %#v", changed.ItemQA)
 	}
 
@@ -894,4 +896,42 @@ func newItemAuthorityEngine(t *testing.T, item Element) (*Engine, Config, Elemen
 	}
 	t.Cleanup(func() { _ = engine.Close() })
 	return engine, config, item
+}
+
+func TestItemAuthoringAndSaveUseCanonicalHTMLAndCleaningPolicy(t *testing.T) {
+	item := supportedTestItem("20260731160300-html001", "Legacy prompt\n\nSecond line", "Legacy answer", "rev-v1-legacy")
+	engine, config, _ := newItemAuthorityEngine(t, item)
+
+	authoring, err := engine.Query(t.Context(), Query{Kind: QueryItemAuthoring, ElementID: item.ID})
+	if err != nil || authoring.ItemAuthoring == nil {
+		t.Fatalf("authoring result=%#v err=%v", authoring, err)
+	}
+	if authoring.ItemAuthoring.Prompt != "<p>Legacy prompt</p><p><br></p><p>Second line</p>" ||
+		authoring.ItemAuthoring.Answer != "<p>Legacy answer</p>" ||
+		authoring.ItemAuthoring.CleaningPolicyVersion != itemHTMLCleaningPolicyVersion {
+		t.Fatalf("migrated authoring=%#v", authoring.ItemAuthoring)
+	}
+
+	prompt := `<p>Prompt<img src="assets/prompt.png" alt="prompt"></p>`
+	answer := `<p>Answer<img src="assets/answer.png" alt="answer"></p>`
+	changed, err := engine.ChangeElement(t.Context(), ChangeElementCommand{Kind: ChangeElementSaveItemQA, SaveItemQA: SaveItemQACommand{
+		ElementID: item.ID, ExpectedContentRevision: item.Payload.Revision, Prompt: prompt, Answer: answer,
+	}})
+	if err != nil || changed.ItemQA == nil || !changed.Changed || changed.CleaningPolicyVersion != itemHTMLCleaningPolicyVersion {
+		t.Fatalf("canonical Item save=%#v err=%v", changed, err)
+	}
+	if changed.ItemQA.Prompt != prompt || changed.ItemQA.Answer != answer || changed.ItemQA.CleaningPolicyVersion != itemHTMLCleaningPolicyVersion {
+		t.Fatalf("canonical Item payload=%#v", changed.ItemQA)
+	}
+	authority := string(readOptionalFile(t, filepath.Join(config.ElementsRoot(), item.ID+".sme")))
+	if !strings.Contains(authority, `assets/prompt.png`) || !strings.Contains(authority, `assets/answer.png`) {
+		t.Fatalf("saved Item authority lost image references: %s", authority)
+	}
+
+	_, err = engine.ChangeElement(t.Context(), ChangeElementCommand{Kind: ChangeElementSaveItemQA, SaveItemQA: SaveItemQACommand{
+		ElementID: item.ID, ExpectedContentRevision: changed.Revision, Prompt: `<p><img src="../assets/escape.png"></p>`, Answer: `<p>Answer</p>`,
+	}})
+	if err == nil {
+		t.Fatal("unsafe Item HTML was accepted")
+	}
 }

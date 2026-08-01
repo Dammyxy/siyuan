@@ -419,7 +419,9 @@ func TestItemAuthoringQueryExplicitlyDisclosesFullPairWhileGenericDetailRedactsA
 	if err != nil || authoring.ItemAuthoring == nil {
 		t.Fatalf("authoring result=%#v err=%v", authoring, err)
 	}
-	if authoring.ItemAuthoring.ElementID != item.ID || authoring.ItemAuthoring.Prompt != item.Payload.Prompt || authoring.ItemAuthoring.Answer != item.Payload.Answer || authoring.ItemAuthoring.ContentRevision != item.Payload.Revision {
+	wantPrompt, _ := canonicalizeItemHTML(item.Payload.Prompt)
+	wantAnswer, _ := canonicalizeItemHTML(item.Payload.Answer)
+	if authoring.ItemAuthoring.ElementID != item.ID || authoring.ItemAuthoring.Prompt != wantPrompt || authoring.ItemAuthoring.Answer != wantAnswer || authoring.ItemAuthoring.ContentRevision != item.Payload.Revision || authoring.ItemAuthoring.CleaningPolicyVersion != itemHTMLCleaningPolicyVersion {
 		t.Fatalf("authoring view = %#v", authoring.ItemAuthoring)
 	}
 

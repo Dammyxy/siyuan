@@ -130,7 +130,7 @@ func TestItemDerivedTreeTitleRefreshesAfterAggregateEdit(t *testing.T) {
 	engine, _, _ := newItemAuthorityEngine(t, item)
 
 	saved, err := engine.ChangeElement(t.Context(), ChangeElementCommand{Kind: ChangeElementSaveItemQA, SaveItemQA: SaveItemQACommand{
-		ElementID: item.ID, ExpectedContentRevision: item.Payload.Revision, Prompt: "\n  New derived label  \nrest", Answer: "New answer",
+		ElementID: item.ID, ExpectedContentRevision: item.Payload.Revision, Prompt: "<p>New derived label</p><p>rest</p>", Answer: "<p>New answer</p>",
 	}})
 	if err != nil || !saved.ChangeAccepted {
 		t.Fatalf("save result=%#v err=%v", saved, err)

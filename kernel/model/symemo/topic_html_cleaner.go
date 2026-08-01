@@ -512,6 +512,11 @@ func isTopicHTMLMathCommandByte(value byte) bool {
 
 func sanitizeTopicHTMLURL(raw string, allowFragment bool) string {
 	trimmed := strings.TrimSpace(raw)
+	if !allowFragment {
+		if local := normalizeLocalAssetReference(trimmed); local != "" {
+			return local
+		}
+	}
 	if strings.HasPrefix(trimmed, "#") {
 		if allowFragment && len(trimmed) > 1 && !strings.ContainsAny(trimmed, " \t\r\n") {
 			return trimmed
@@ -525,6 +530,23 @@ func sanitizeTopicHTMLURL(raw string, allowFragment bool) string {
 	scheme := strings.ToLower(parsed.Scheme)
 	if scheme != "http" && scheme != "https" {
 		return ""
+	}
+	return trimmed
+}
+
+func normalizeLocalAssetReference(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, "assets/") || strings.ContainsAny(trimmed, "\\\x00\r\n") {
+		return ""
+	}
+	path := strings.TrimPrefix(trimmed, "assets/")
+	if path == "" || strings.ContainsAny(path, "?#") {
+		return ""
+	}
+	for _, segment := range strings.Split(path, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return ""
+		}
 	}
 	return trimmed
 }

@@ -47,6 +47,7 @@ import (
 	"github.com/siyuan-note/siyuan/kernel/cache"
 	"github.com/siyuan-note/siyuan/kernel/conf"
 	"github.com/siyuan-note/siyuan/kernel/filesys"
+	"github.com/siyuan-note/siyuan/kernel/model/symemo"
 	"github.com/siyuan-note/siyuan/kernel/search"
 	"github.com/siyuan-note/siyuan/kernel/sql"
 	"github.com/siyuan-note/siyuan/kernel/treenode"
@@ -1544,6 +1545,14 @@ type UnusedItem struct {
 	ModTime  time.Time `json:"-"`
 }
 
+var siyuanMemoAssetReferencePaths = func() ([]string, error) {
+	return symemo.CollectAssetReferences(filepath.Join(util.DataDir, "storage", "siyuanmemo", "elements"))
+}
+
+func collectSiyuanMemoAssetReferences() ([]string, error) {
+	return siyuanMemoAssetReferencePaths()
+}
+
 func UnusedAssets(sorted bool) (ret []*UnusedItem) {
 	defer logging.Recover()
 	ret = []*UnusedItem{}
@@ -1692,6 +1701,15 @@ func UnusedAssets(sorted bool) (ret []*UnusedItem) {
 
 	for _, toRemove := range toRemoves {
 		delete(assetsPathMap, toRemove)
+	}
+
+	// SiYuanMemo 根 .sme 是图片引用的权威来源；扫描失败时保守放弃本次候选结果。
+	siyuanMemoReferences, referenceErr := collectSiyuanMemoAssetReferences()
+	if referenceErr != nil {
+		return
+	}
+	for _, reference := range siyuanMemoReferences {
+		linkDestMap[reference] = true
 	}
 
 	dataAssetsAbsPath := util.GetDataAssetsAbsPath()

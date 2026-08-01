@@ -2,6 +2,8 @@
   "symemoNewItem": "नया आइटम",
   "symemoQuestion": "प्रश्न",
   "symemoAnswer": "उत्तर",
+  "symemoInsertImage": "छवि डालें",
+  "symemoImageUploadFailed": "छवि अपलोड विफल।",
   "symemoCreateItem": "आइटम बनाएँ",
   "symemoItemPromptRequired": "एक प्रश्न दर्ज करें।",
   "symemoItemAnswerRequired": "एक उत्तर दर्ज करें।",

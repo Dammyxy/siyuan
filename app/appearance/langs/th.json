@@ -2,6 +2,8 @@
   "symemoNewItem": "รายการใหม่",
   "symemoQuestion": "คำถาม",
   "symemoAnswer": "คำตอบ",
+  "symemoInsertImage": "แทรกรูปภาพ",
+  "symemoImageUploadFailed": "อัปโหลดรูปภาพล้มเหลว",
   "symemoCreateItem": "สร้างรายการ",
   "symemoItemPromptRequired": "ป้อนคำถาม",
   "symemoItemAnswerRequired": "ป้อนคำตอบ",

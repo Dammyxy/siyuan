@@ -2,6 +2,8 @@
   "symemoNewItem": "Новый элемент",
   "symemoQuestion": "Вопрос",
   "symemoAnswer": "Ответ",
+  "symemoInsertImage": "Вставить изображение",
+  "symemoImageUploadFailed": "Не удалось загрузить изображение.",
   "symemoCreateItem": "Создать элемент",
   "symemoItemPromptRequired": "Введите вопрос.",
   "symemoItemAnswerRequired": "Введите ответ.",

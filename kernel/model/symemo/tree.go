@@ -20,6 +20,8 @@ import (
 	"context"
 	"sort"
 	"strings"
+
+	xhtml "golang.org/x/net/html"
 )
 
 func buildElementTree(records map[string]elementSourceRecord, projections map[string]SchedulingProjection, includeSchedule bool) []ElementTreeNode {
@@ -123,6 +125,9 @@ func elementReadView(element Element, node ElementTreeNode) ElementReadView {
 }
 
 func derivedItemTitle(prompt string) string {
+	if looksLikeItemHTML(prompt) {
+		prompt = itemHTMLTitleText(prompt)
+	}
 	for _, line := range strings.FieldsFunc(prompt, func(r rune) bool { return r == '\r' || r == '\n' }) {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -135,6 +140,34 @@ func derivedItemTitle(prompt string) string {
 		return string(runes)
 	}
 	return ""
+}
+
+func itemHTMLTitleText(input string) string {
+	nodes, err := xhtml.ParseFragment(strings.NewReader(input), xhtmlBodyContext())
+	if err != nil {
+		return input
+	}
+	var builder strings.Builder
+	var walk func(*xhtml.Node)
+	walk = func(node *xhtml.Node) {
+		if node.Type == xhtml.TextNode {
+			builder.WriteString(node.Data)
+			return
+		}
+		if node.Type == xhtml.ElementNode && topicHTMLNeedsNodeID(node.Data) {
+			builder.WriteByte('\n')
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+		if node.Type == xhtml.ElementNode && topicHTMLNeedsNodeID(node.Data) {
+			builder.WriteByte('\n')
+		}
+	}
+	for _, node := range nodes {
+		walk(node)
+	}
+	return builder.String()
 }
 
 func overlayElementBlockReference(ctx context.Context, reader BlockReferenceReader, view ElementReadView) (ElementReadView, error) {

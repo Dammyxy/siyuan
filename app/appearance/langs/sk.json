@@ -2,6 +2,8 @@
   "symemoNewItem": "Nová položka",
   "symemoQuestion": "Otázka",
   "symemoAnswer": "Odpoveď",
+  "symemoInsertImage": "Vložiť obrázok",
+  "symemoImageUploadFailed": "Nahrávanie obrázka zlyhalo.",
   "symemoCreateItem": "Vytvoriť položku",
   "symemoItemPromptRequired": "Zadajte otázku.",
   "symemoItemAnswerRequired": "Zadajte odpoveď.",

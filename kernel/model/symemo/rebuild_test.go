@@ -627,7 +627,9 @@ func TestItemRestartRebuildPreservesAuthorityAndDoesNotInventSchedule(t *testing
 		t.Fatal(err)
 	}
 	after, err := rebuilt.Query(t.Context(), Query{Kind: QueryItemAuthoring, ElementID: elementID})
-	if err != nil || after.ItemAuthoring == nil || after.ItemAuthoring.Prompt != "Corrected restart question" || after.ItemAuthoring.Answer != "Corrected restart answer" || after.ItemAuthoring.ContentRevision != updated.Revision {
+	wantPrompt, _ := canonicalizeItemHTML("Corrected restart question")
+	wantAnswer, _ := canonicalizeItemHTML("Corrected restart answer")
+	if err != nil || after.ItemAuthoring == nil || after.ItemAuthoring.Prompt != wantPrompt || after.ItemAuthoring.Answer != wantAnswer || after.ItemAuthoring.ContentRevision != updated.Revision {
 		t.Fatalf("rebuilt authoring = %#v, err=%v", after.ItemAuthoring, err)
 	}
 	if rebuiltAuthority := authoritativeSymemoJSON(t, config); string(rebuiltAuthority) != string(beforeAuthority) {

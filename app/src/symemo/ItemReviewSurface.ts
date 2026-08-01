@@ -1,8 +1,11 @@
 import type {LearningSessionProjection, ModelTransitionReason, ModelTransitionResult} from "./types";
+import {filterItemHTMLIngress} from "./itemHtmlIngress";
+import type {TopicDomParser} from "./topicDom";
 
 interface ItemReviewSurfaceOptions {
     container: HTMLElement;
     language?: (key: string) => string;
+    topicDomParser?: TopicDomParser;
 }
 
 const itemTarget = (session: LearningSessionProjection) =>
@@ -45,7 +48,7 @@ export class ItemReviewSurface {
         question.className = "symemo-item-review__question";
         question.setAttribute("data-role", "item-question");
         question.setAttribute("tabindex", "-1");
-        question.textContent = target.prompt;
+        this.renderMaterial(question, target.prompt);
         article.append(question);
 
         let answer: HTMLElement | undefined;
@@ -54,7 +57,7 @@ export class ItemReviewSurface {
             answer.className = "symemo-item-review__answer";
             answer.setAttribute("data-role", "item-answer");
             answer.setAttribute("tabindex", "-1");
-            answer.textContent = target.answer!;
+            this.renderMaterial(answer, target.answer!);
             article.append(answer);
         }
         this.options.container.replaceChildren(article);
@@ -76,5 +79,13 @@ export class ItemReviewSurface {
         this.disposed = true;
         this.session = undefined;
         this.options.container.replaceChildren();
+    }
+
+    private renderMaterial(element: HTMLElement, material: string): void {
+        if (/<[a-z][\s\S]*>/i.test(material)) {
+            element.innerHTML = filterItemHTMLIngress(material, this.options.topicDomParser);
+        } else {
+            element.textContent = material;
+        }
     }
 }

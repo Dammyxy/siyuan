@@ -682,3 +682,150 @@ test("repairs an authoritative assignment restored by an older undo snapshot bef
     });
     assert.equal(editor.content, '<p data-symemo-node-id="stable-1">undo text</p>');
 });
+
+test("inserts ordered native asset references only after upload succeeds", async () => {
+    const {loader, editor} = createLoader([]);
+    const host = new FakeHost();
+    const adapter = new TinyMceTopicEditorAdapter({
+        host: host as unknown as HTMLElement,
+        initialHTML: "<p>Before</p>",
+        loader,
+        topicDomParser: parse5TopicDom,
+        uploadImages: async () => ({
+            ok: true,
+            references: ["assets/first.png", "assets/second.png"],
+            selection: {id: "bookmark"},
+        }),
+    });
+    await adapter.mount();
+
+    const result = await adapter.insertImageFiles([
+        new File(["1"], "first.png", {type: "image/png"}),
+        new File(["2"], "second.png", {type: "image/png"}),
+    ]);
+
+    assert.equal(result.ok, true);
+    assert.match(editor.content, /assets\/first\.png/);
+    assert.match(editor.content, /assets\/second\.png/);
+    assert.equal(editor.content.includes("data:image"), false);
+});
+
+test("leaves pasted image files to TopicHtmlSurface as the single upload owner", async () => {
+    const {loader, editor} = createLoader([]);
+    let uploadCount = 0;
+    let prevented = false;
+    const adapter = new TinyMceTopicEditorAdapter({
+        host: new FakeHost() as unknown as HTMLElement,
+        initialHTML: "<p>Before</p>",
+        loader,
+        topicDomParser: parse5TopicDom,
+        uploadImages: async () => {
+            uploadCount++;
+            return {ok: true, references: ["assets/pasted.png"], selection: {id: "bookmark"}};
+        },
+    });
+    await adapter.mount();
+
+    editor.emit("paste", {
+        clipboardData: {files: [new File(["1"], "pasted.png", {type: "image/png"})]},
+        preventDefault: () => { prevented = true; },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(uploadCount, 0);
+    assert.equal(prevented, false);
+    assert.doesNotMatch(editor.content, /pasted\.png/);
+});
+
+test("does not insert a placeholder when native asset upload fails", async () => {
+    const {loader, editor} = createLoader([]);
+    const adapter = new TinyMceTopicEditorAdapter({
+        host: new FakeHost() as unknown as HTMLElement,
+        initialHTML: "<p>Before</p>",
+        loader,
+        topicDomParser: parse5TopicDom,
+        uploadImages: async () => ({ok: false, kind: "response", selection: {id: "bookmark"}}),
+    });
+    await adapter.mount();
+
+    const result = await adapter.insertImageFiles([new File(["1"], "failed.png", {type: "image/png"})]);
+
+    assert.equal(result.ok, false);
+    assert.match(editor.content, /Before/);
+    assert.doesNotMatch(editor.content, /failed\.png|data:image/);
+});
+
+test("does not insert a late image upload after the editor becomes non-interactive", async () => {
+    const {loader, editor} = createLoader([]);
+    let releaseUpload!: (result: import("./assetStore").AssetImportResult) => void;
+    const upload = new Promise<import("./assetStore").AssetImportResult>((resolve) => {
+        releaseUpload = resolve;
+    });
+    const adapter = new TinyMceTopicEditorAdapter({
+        host: new FakeHost() as unknown as HTMLElement,
+        initialHTML: "<p>Before</p>",
+        loader,
+        topicDomParser: parse5TopicDom,
+        uploadImages: async () => upload,
+    });
+    await adapter.mount();
+
+    const pending = adapter.insertImageFiles([new File(["1"], "late.png", {type: "image/png"})]);
+    adapter.setInteractive(false);
+    releaseUpload({ok: true, references: ["assets/late.png"], selection: {}});
+    await pending;
+
+    assert.match(editor.content, /Before/);
+    assert.doesNotMatch(editor.content, /late\.png/);
+});
+
+test("reports native drop upload failures through the adapter callback", async () => {
+    const {loader, editor} = createLoader([]);
+    const host = new FakeHost();
+    const failures: import("./assetStore").AssetImportResult[] = [];
+    const adapter = new TinyMceTopicEditorAdapter({
+        host: host as unknown as HTMLElement,
+        initialHTML: "<p>Before</p>",
+        loader,
+        topicDomParser: parse5TopicDom,
+        uploadImages: async () => ({ok: false, kind: "response", selection: {}}),
+        onImageImportFailure: (result) => failures.push(result),
+    });
+    await adapter.mount();
+
+    host.dispatch("drop", {
+        dataTransfer: {files: [new File(["1"], "failed-drop.png", {type: "image/png"})], types: []},
+        preventDefault() {},
+        stopPropagation() {},
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0]?.ok, false);
+    assert.match(editor.content, /Before/);
+});
+
+test("does not apply an upload captured before a barrier even after interaction resumes", async () => {
+    const {loader, editor} = createLoader([]);
+    let releaseUpload!: (result: import("./assetStore").AssetImportResult) => void;
+    const upload = new Promise<import("./assetStore").AssetImportResult>((resolve) => {
+        releaseUpload = resolve;
+    });
+    const adapter = new TinyMceTopicEditorAdapter({
+        host: new FakeHost() as unknown as HTMLElement,
+        initialHTML: "<p>Before</p>",
+        loader,
+        topicDomParser: parse5TopicDom,
+        uploadImages: async () => upload,
+    });
+    await adapter.mount();
+
+    const pending = adapter.insertImageFiles([new File(["1"], "stale.png", {type: "image/png"})]);
+    adapter.setInteractive(false);
+    adapter.setInteractive(true);
+    releaseUpload({ok: true, references: ["assets/stale.png"], selection: {}});
+    await pending;
+
+    assert.match(editor.content, /Before/);
+    assert.doesNotMatch(editor.content, /stale\.png/);
+});

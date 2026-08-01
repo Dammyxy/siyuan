@@ -10,6 +10,7 @@ import type {
     TopicHtmlEditorFactory,
 } from "./TopicHtmlSurface";
 import {parse5TopicDom} from "./testTopicDom";
+import type {AssetImportResult} from "./assetStore";
 
 
 const stubPaths = [
@@ -78,6 +79,8 @@ class FakeEditor implements TopicHtmlEditorAdapter {
     public focused = false;
     public formattingActions: TopicFormattingAction[] = [];
     public insertedHTML: string[] = [];
+    public imageFiles: File[][] = [];
+    public imageImportResult?: AssetImportResult;
     public replacedHTML: string[] = [];
     public interactive: boolean[] = [];
     public selectionTrace: string[] = [];
@@ -120,6 +123,12 @@ class FakeEditor implements TopicHtmlEditorAdapter {
 
     public insertHTML(html: string): void {
         this.insertedHTML.push(html);
+    }
+
+    public async insertImageFiles(files: File[]): Promise<AssetImportResult> {
+        this.imageFiles.push(files);
+        if (this.imageImportResult) return this.imageImportResult;
+        return {ok: true, references: files.map((file) => `assets/${file.name}`), selection: {}};
     }
 
     public replaceHTML(html: string): void {
@@ -234,6 +243,7 @@ const createSurface = (factory: TopicHtmlEditorFactory, options: {
             symemoTopicSaveAsNew: "Save as new",
             symemoTopicSaving: "Saving",
             symemoTopicClean: "Saved",
+            symemoImageUploadFailed: "Image upload failed.",
             untitled: "Untitled",
         })[key] || "",
     });
@@ -287,6 +297,70 @@ describe("Topic HTML authoring surface", () => {
         editor.mountGate.resolve();
         await mounted;
         assert.equal(editor.mounted, true);
+    });
+
+    it("routes pasted image files through the editor image seam", async () => {
+        const editor = new FakeEditor();
+        const {container, surface} = createSurface(() => editor);
+        const mounted = surface.mount(detail());
+        editor.mountGate.resolve();
+        await mounted;
+        let prevented = false;
+        container.querySelector(".symemo-topic-html-surface__editor")?.dispatch("paste", {
+            clipboardData: {files: [new File(["1"], "screenshot.png", {type: "image/png"})]},
+            preventDefault: () => { prevented = true; },
+        });
+        await wait(0);
+        assert.equal(prevented, true);
+        assert.deepEqual(editor.imageFiles.map((files) => files.map((file) => file.name)), [["screenshot.png"]]);
+    });
+
+    it("exposes a native image picker that uses the same ordered file seam", async () => {
+        const editor = new FakeEditor();
+        const {container, surface} = createSurface(() => editor);
+        const mounted = surface.mount(detail());
+        editor.mountGate.resolve();
+        await mounted;
+        const imageButton = container.querySelector('[data-command="image"]');
+        assert.ok(imageButton);
+        imageButton.dispatch("click");
+        const picker = container.querySelector('input[type="file"]');
+        assert.ok(picker);
+        picker.dispatch("change", {
+            target: {files: [
+                new File(["1"], "first.png", {type: "image/png"}),
+                new File(["2"], "second.png", {type: "image/png"}),
+            ]},
+        });
+        await wait(0);
+        assert.deepEqual(editor.imageFiles.map((files) => files.map((file) => file.name)), [["first.png", "second.png"]]);
+    });
+
+    it("reports image upload failures from paste and the native picker", async () => {
+        const editor = new FakeEditor();
+        editor.imageImportResult = {ok: false, kind: "response", selection: {}};
+        const {container, surface} = createSurface(() => editor);
+        const mounted = surface.mount(detail());
+        editor.mountGate.resolve();
+        await mounted;
+
+        container.querySelector(".symemo-topic-html-surface__editor")?.dispatch("paste", {
+            clipboardData: {files: [new File(["1"], "failed-paste.png", {type: "image/png"})]},
+            preventDefault() {},
+        });
+        await wait(0);
+        assert.equal(container.querySelector(".symemo-topic-html-surface__status")?.textContent,
+            "Image upload failed.");
+
+        const imageButton = container.querySelector('[data-command="image"]');
+        assert.ok(imageButton);
+        imageButton.dispatch("click");
+        const picker = container.querySelector('input[type="file"]');
+        assert.ok(picker);
+        picker.dispatch("change", {target: {files: [new File(["1"], "failed-picker.png", {type: "image/png"})]}});
+        await wait(0);
+        assert.equal(container.querySelector(".symemo-topic-html-surface__status")?.textContent,
+            "Image upload failed.");
     });
 
     it("destroys a late editor after a cancelled mount and retries cleanly on the next mount", async () => {

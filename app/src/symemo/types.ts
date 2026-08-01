@@ -24,6 +24,7 @@ export interface ItemDetailView {
     kind: "qa";
     prompt: string;
     revision: string;
+    cleaningPolicyVersion?: string;
 }
 
 export interface ElementDetailView {
@@ -217,6 +218,7 @@ export interface ItemAuthoringView {
     prompt: string;
     answer: string;
     contentRevision: string;
+    cleaningPolicyVersion?: string;
 }
 
 export type ItemAuthoringResult =
@@ -253,6 +255,7 @@ export interface CanonicalItemQA {
     prompt: string;
     answer: string;
     contentRevision: string;
+    cleaningPolicyVersion?: string;
 }
 
 export interface AcceptedItemQAChange {

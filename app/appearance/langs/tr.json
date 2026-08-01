@@ -2,6 +2,8 @@
   "symemoNewItem": "Yeni öğe",
   "symemoQuestion": "Soru",
   "symemoAnswer": "Yanıt",
+  "symemoInsertImage": "Görsel ekle",
+  "symemoImageUploadFailed": "Görsel yüklenemedi.",
   "symemoCreateItem": "Öğe oluştur",
   "symemoItemPromptRequired": "Bir soru girin.",
   "symemoItemAnswerRequired": "Bir yanıt girin.",

@@ -2,6 +2,8 @@
   "symemoNewItem": "新しいアイテム",
   "symemoQuestion": "質問",
   "symemoAnswer": "回答",
+  "symemoInsertImage": "画像を挿入",
+  "symemoImageUploadFailed": "画像のアップロードに失敗しました。",
   "symemoCreateItem": "アイテムを作成",
   "symemoItemPromptRequired": "質問を入力してください。",
   "symemoItemAnswerRequired": "回答を入力してください。",

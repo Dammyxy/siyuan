@@ -3,6 +3,7 @@ import * as assert from "node:assert/strict";
 import {ItemReviewSurface} from "./ItemReviewSurface";
 import type {LearningSessionProjection} from "./types";
 import {TestDocument, TestElement} from "./testDom";
+import {parse5TopicDom} from "./testTopicDom";
 
 const question = (): LearningSessionProjection => ({
     sessionId: "session-item-review",
@@ -30,7 +31,7 @@ beforeEach(() => {
 
 describe("ItemReviewSurface", () => {
     it("renders multiline prompt text with no answer node, attribute, dataset, or accessibility text", () => {
-        const surface = new ItemReviewSurface({container: container as unknown as HTMLElement});
+        const surface = new ItemReviewSurface({container: container as unknown as HTMLElement, topicDomParser: parse5TopicDom});
         surface.mount(question());
 
         assert.equal(container.querySelector('[data-role="item-question"]')?.textContent, "Question\n第二行");
@@ -42,7 +43,7 @@ describe("ItemReviewSurface", () => {
     });
 
     it("reveals only the answer captured by an answer-phase session snapshot", () => {
-        const surface = new ItemReviewSurface({container: container as unknown as HTMLElement});
+        const surface = new ItemReviewSurface({container: container as unknown as HTMLElement, topicDomParser: parse5TopicDom});
         surface.mount(question());
         surface.update(answer());
 
@@ -69,5 +70,32 @@ describe("ItemReviewSurface", () => {
         surface.destroy();
         surface.destroy();
         assert.equal(container.children.length, 0);
+    });
+
+    it("renders cleaned Item HTML while keeping answer HTML out of question phase", () => {
+        const surface = new ItemReviewSurface({container: container as unknown as HTMLElement, topicDomParser: parse5TopicDom});
+        surface.mount({
+            ...question(),
+            current: {
+                kind: "element.item",
+                elementId: "item-review",
+                prompt: '<p>Prompt<img src="assets/prompt.png"></p>',
+            },
+        });
+        const questionElement = container.querySelector('[data-role="item-question"]') as TestElement;
+        assert.equal(questionElement.innerHTML, '<p>Prompt<img src="assets/prompt.png"></p>');
+        assert.equal(container.textContent.includes("Answer"), false);
+
+        surface.update({
+            ...answer(),
+            current: {
+                kind: "element.item",
+                elementId: "item-review",
+                prompt: '<p>Prompt<img src="assets/prompt.png"></p>',
+                answer: '<p>Answer<img src="assets/answer.png"></p>',
+            },
+        });
+        assert.equal((container.querySelector('[data-role="item-answer"]') as TestElement).innerHTML,
+            '<p>Answer<img src="assets/answer.png"></p>');
     });
 });

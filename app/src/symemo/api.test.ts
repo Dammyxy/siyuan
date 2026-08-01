@@ -311,6 +311,7 @@ describe("Item authoring transport clients", () => {
             prompt: "Question",
             answer: "Answer",
             contentRevision: "rev-v1-current",
+            cleaningPolicyVersion: "siyuanmemo-topic-html-v1",
         }));
 
         assert.deepEqual(await getItemAuthoring(elementId), {
@@ -320,6 +321,7 @@ describe("Item authoring transport clients", () => {
                 prompt: "Question",
                 answer: "Answer",
                 contentRevision: "rev-v1-current",
+                cleaningPolicyVersion: "siyuanmemo-topic-html-v1",
             },
         });
         assert.deepEqual(calls, [{url: "/api/symemo/getItemAuthoring", data: {elementId}}]);
@@ -338,11 +340,13 @@ describe("Item authoring transport clients", () => {
             kind: "SaveItemQA",
             elementId,
             changedField: "itemQA",
+            canonicalValue: "",
             revision: "rev-v1-next",
             itemQA: {
                 prompt: "Corrected question",
                 answer: "Corrected answer",
                 contentRevision: "rev-v1-next",
+                cleaningPolicyVersion: "siyuanmemo-topic-html-v1",
             },
             changed: true,
             changeAccepted: true,
@@ -355,6 +359,10 @@ describe("Item authoring transport clients", () => {
             "Corrected answer",
         );
         assert.equal(result.ok, true);
+        if (result.ok) {
+            assert.equal(result.change.itemQA.prompt, "Corrected question");
+            assert.equal(result.change.itemQA.cleaningPolicyVersion, "siyuanmemo-topic-html-v1");
+        }
         assert.deepEqual(calls, [{
             url: "/api/symemo/saveItemQA",
             data: {

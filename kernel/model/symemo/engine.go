@@ -237,8 +237,17 @@ func (engine *Engine) Query(ctx context.Context, query Query) (QueryResult, erro
 		if element.Type != "item" || element.Payload.Kind != "qa" {
 			return QueryResult{}, domainError(ErrUnsupportedOperation, "Element is not a supported Q/A Item", nil)
 		}
+		prompt, promptErr := canonicalizeItemHTML(element.Payload.Prompt)
+		if promptErr != nil {
+			return QueryResult{}, domainError(ErrElementSourceUnavailable, "Item prompt HTML is invalid", promptErr)
+		}
+		answer, answerErr := canonicalizeItemHTML(element.Payload.Answer)
+		if answerErr != nil {
+			return QueryResult{}, domainError(ErrElementSourceUnavailable, "Item answer HTML is invalid", answerErr)
+		}
 		return QueryResult{ItemAuthoring: &ItemAuthoringView{
-			ElementID: element.ID, Prompt: element.Payload.Prompt, Answer: element.Payload.Answer, ContentRevision: element.Payload.Revision,
+			ElementID: element.ID, Prompt: prompt, Answer: answer, ContentRevision: element.Payload.Revision,
+			CleaningPolicyVersion: itemHTMLCleaningPolicyVersion,
 		}}, nil
 	case QueryElementSourceDiagnostics:
 		diagnostics, err := engine.index.sourceDiagnostics()

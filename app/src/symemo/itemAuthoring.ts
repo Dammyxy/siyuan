@@ -5,6 +5,38 @@ import type {
     ModelTransitionResult,
 } from "./types";
 
+export interface ItemEditorSelection {
+    range?: Range;
+}
+
+export const captureItemEditorSelection = (editor: HTMLElement): ItemEditorSelection => {
+    const selection = typeof window !== "undefined" ? window.getSelection?.() : undefined;
+    const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : undefined;
+    if (!range || !editor.contains?.(range.commonAncestorContainer)) return {};
+    return {range: range.cloneRange()};
+};
+
+export const insertItemHTMLAtSelection = (
+    editor: HTMLElement,
+    html: string,
+    selection: ItemEditorSelection = {},
+): void => {
+    const range = selection.range;
+    if (!range || !editor.contains?.(range.commonAncestorContainer) || !range.createContextualFragment) {
+        editor.innerHTML += html;
+        return;
+    }
+    const fragment = range.createContextualFragment(html);
+    range.deleteContents();
+    range.insertNode(fragment);
+    range.collapse(false);
+    const currentSelection = typeof window !== "undefined" ? window.getSelection?.() : undefined;
+    if (currentSelection) {
+        currentSelection.removeAllRanges();
+        currentSelection.addRange(range);
+    }
+};
+
 export type ItemAuthoringState =
     | "loading"
     | "clean"

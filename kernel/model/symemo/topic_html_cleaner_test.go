@@ -87,6 +87,16 @@ func TestTopicHTMLCleanerRejectsNonRenderableFragments(t *testing.T) {
 	}
 }
 
+func TestTopicHTMLCleanerKeepsManagedAssetReferences(t *testing.T) {
+	cleaned, err := cleanTopicHTMLFragment(`<p>Before<img src="assets/topic-image.png" alt="local">After</p>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cleaned, `src="assets/topic-image.png"`) {
+		t.Fatalf("managed asset reference was dropped: %s", cleaned)
+	}
+}
+
 func TestTopicHTMLCleanerDropsTrustSensitiveMath(t *testing.T) {
 	inputs := []string{
 		`<p>kept</p><span data-type="inline-math" data-subtype="math" data-content="\href{javascript:alert(1)}{open}"></span>`,

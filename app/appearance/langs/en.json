@@ -2,6 +2,8 @@
   "symemoNewItem": "New Item",
   "symemoQuestion": "Question",
   "symemoAnswer": "Answer",
+  "symemoInsertImage": "Insert image",
+  "symemoImageUploadFailed": "Image upload failed.",
   "symemoCreateItem": "Create Item",
   "symemoItemPromptRequired": "Enter a question.",
   "symemoItemAnswerRequired": "Enter an answer.",

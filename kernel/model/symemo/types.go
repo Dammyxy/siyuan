@@ -593,10 +593,11 @@ type QueryResult struct {
 }
 
 type ItemAuthoringView struct {
-	ElementID       string `json:"elementId"`
-	Prompt          string `json:"prompt"`
-	Answer          string `json:"answer"`
-	ContentRevision string `json:"contentRevision"`
+	ElementID             string `json:"elementId"`
+	Prompt                string `json:"prompt"`
+	Answer                string `json:"answer"`
+	ContentRevision       string `json:"contentRevision"`
+	CleaningPolicyVersion string `json:"cleaningPolicyVersion"`
 }
 
 type LearningResult struct {
@@ -723,9 +724,10 @@ type CreateElementResult struct {
 }
 
 type CanonicalItemQA struct {
-	Prompt          string `json:"prompt"`
-	Answer          string `json:"answer"`
-	ContentRevision string `json:"contentRevision"`
+	Prompt                string `json:"prompt"`
+	Answer                string `json:"answer"`
+	ContentRevision       string `json:"contentRevision"`
+	CleaningPolicyVersion string `json:"cleaningPolicyVersion"`
 }
 
 type ChangeElementResult struct {

@@ -2,6 +2,8 @@
   "symemoNewItem": "פריט חדש",
   "symemoQuestion": "שאלה",
   "symemoAnswer": "תשובה",
+  "symemoInsertImage": "הוספת תמונה",
+  "symemoImageUploadFailed": "העלאת התמונה נכשלה.",
   "symemoCreateItem": "יצירת פריט",
   "symemoItemPromptRequired": "יש להזין שאלה.",
   "symemoItemAnswerRequired": "יש להזין תשובה.",

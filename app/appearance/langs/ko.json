@@ -2,6 +2,8 @@
   "symemoNewItem": "새 항목",
   "symemoQuestion": "질문",
   "symemoAnswer": "답변",
+  "symemoInsertImage": "이미지 삽입",
+  "symemoImageUploadFailed": "이미지 업로드에 실패했습니다.",
   "symemoCreateItem": "항목 만들기",
   "symemoItemPromptRequired": "질문을 입력하세요.",
   "symemoItemAnswerRequired": "답변을 입력하세요.",

@@ -2,6 +2,8 @@
   "symemoNewItem": "عنصر جديد",
   "symemoQuestion": "السؤال",
   "symemoAnswer": "الإجابة",
+  "symemoInsertImage": "إدراج صورة",
+  "symemoImageUploadFailed": "فشل تحميل الصورة.",
   "symemoCreateItem": "إنشاء العنصر",
   "symemoItemPromptRequired": "أدخل سؤالًا.",
   "symemoItemAnswerRequired": "أدخل إجابةً.",

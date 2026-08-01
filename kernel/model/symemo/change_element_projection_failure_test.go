@@ -160,10 +160,12 @@ func TestSaveItemQAAcceptedProjectionFailureReturnsCanonicalPair(t *testing.T) {
 	if !ok || domainErr.Code != ErrProjectionRefreshFailed || !domainErr.Retryable || !domainErr.ChangeAccepted || domainErr.AcceptedChange == nil || domainErr.AcceptedChange.ItemQA == nil || !result.ChangeAccepted || result.ItemQA == nil {
 		t.Fatalf("accepted Q/A result=%#v err=%#v", result, domainErr)
 	}
+	wantPrompt, _ := canonicalizeItemHTML("Accepted prompt")
+	wantAnswer, _ := canonicalizeItemHTML("Accepted answer")
 	if domainErr.AcceptedChange.Kind != ChangeElementSaveItemQA || domainErr.AcceptedChange.ElementID != item.ID ||
 		domainErr.AcceptedChange.ChangedField != ChangedElementItemQA || !domainErr.AcceptedChange.Changed ||
-		!domainErr.AcceptedChange.ChangeAccepted || result.ItemQA.Prompt != "Accepted prompt" ||
-		result.ItemQA.Answer != "Accepted answer" || result.ItemQA.ContentRevision != result.Revision ||
+		!domainErr.AcceptedChange.ChangeAccepted || result.ItemQA.Prompt != wantPrompt ||
+		result.ItemQA.Answer != wantAnswer || result.ItemQA.ContentRevision != result.Revision ||
 		domainErr.AcceptedChange.ItemQA.ContentRevision != result.Revision {
 		t.Fatalf("accepted canonical Q/A result=%#v err=%#v", result, domainErr)
 	}

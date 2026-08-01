@@ -2,6 +2,7 @@ import {after, before, beforeEach, describe, it} from "node:test";
 import * as assert from "node:assert/strict";
 import type {ElementDetailView, ItemAuthoringResult, ItemQAChangeResult, ModelTransitionReason} from "./types";
 import {deferred, TestDocument, TestElement} from "./testDom";
+import {parse5TopicDom} from "./testTopicDom";
 
 const stubPaths = [require.resolve("./api")];
 const originalModules = stubPaths.map((modulePath) => require.cache[modulePath]);
@@ -85,7 +86,7 @@ const language = (key: string) => ({
     retry: "Retry",
 }[key] || "");
 
-const makeSurface = (overrides: Record<string, unknown> = {}) => {
+const makeSurface = (overrides: Partial<import("./ItemAuthoringSurface").ItemAuthoringSurfaceOptions> = {}) => {
     const container = testDocument.createElement("div");
     const surface = new ItemAuthoringSurface({container: container as unknown as HTMLElement, language, debounceMs: -1, ...overrides});
     return {container, surface};
@@ -110,6 +111,144 @@ describe("ItemAuthoringSurface", () => {
         assert.equal(container.querySelector('[data-role="answer-label"]')?.getAttribute("for"), answer.getAttribute("id"));
         assert.equal(container.querySelector('[data-role="status"]')?.getAttribute("aria-live"), "polite");
         assert.equal(container.querySelector('[data-role="status"]')?.textContent, "Saved");
+    });
+
+    it("renders HTML prompt and answer editors and retains ordered local image insertion", async () => {
+        getAuthoringImpl = async (elementId) => ({ok: true, authoring: {
+            elementId,
+            prompt: "<p>Prompt</p>",
+            answer: "<p>Answer</p>",
+            contentRevision: "rev-html",
+        }});
+        const {container, surface} = makeSurface({
+            uploadImages: async () => ({ok: true, references: ["assets/one.png", "assets/two.png"], selection: {}}),
+        });
+        await surface.mount(detail());
+        const promptEditor = container.querySelector('[data-role="prompt-editor"]') as TestElement;
+        const answerEditor = container.querySelector('[data-role="answer-editor"]') as TestElement;
+        assert.ok(promptEditor);
+        assert.ok(answerEditor);
+        promptEditor.dispatch("paste", {
+            clipboardData: {files: [
+                new File(["1"], "one.png", {type: "image/png"}),
+                new File(["2"], "two.png", {type: "image/png"}),
+            ]},
+            preventDefault() {},
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.match(promptEditor.innerHTML, /assets\/one\.png/);
+        assert.match(promptEditor.innerHTML, /assets\/two\.png/);
+        assert.doesNotMatch(answerEditor.innerHTML, /assets\/one\.png/);
+    });
+
+    it("passes the captured editor selection to the image upload seam", async () => {
+        getAuthoringImpl = async (elementId) => ({ok: true, authoring: {
+            elementId,
+            prompt: "<p>Prompt</p>",
+            answer: "<p>Answer</p>",
+            contentRevision: "rev-html-selection",
+        }});
+        let uploadSelection: unknown;
+        const {container, surface} = makeSurface({
+            uploadImages: async (_files, selection) => {
+                uploadSelection = selection;
+                return {ok: true, references: ["assets/selected.png"], selection: {}};
+            },
+        });
+        await surface.mount(detail());
+        const promptEditor = container.querySelector('[data-role="prompt-editor"]') as TestElement;
+        promptEditor.dispatch("paste", {
+            clipboardData: {files: [new File(["1"], "selected.png", {type: "image/png"})]},
+            preventDefault() {},
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.deepEqual(uploadSelection, {});
+    });
+
+    it("mounts backend-migrated legacy paragraphs as independent HTML editors", async () => {
+        getAuthoringImpl = async (elementId) => ({ok: true, authoring: {
+            elementId,
+            prompt: "<p>Legacy prompt</p><p><br></p><p>Second line</p>",
+            answer: "<p>Legacy answer</p>",
+            contentRevision: "rev-legacy-html",
+            cleaningPolicyVersion: "siyuanmemo-topic-html-v1",
+        }});
+        const {container, surface} = makeSurface({topicDomParser: parse5TopicDom});
+
+        await surface.mount(detail());
+
+        assert.equal(container.querySelector('textarea[data-role="prompt"]')?.getAttribute("hidden"), "true");
+        assert.equal(container.querySelector('textarea[data-role="answer"]')?.getAttribute("hidden"), "true");
+        assert.equal((container.querySelector('[data-role="prompt-editor"]') as TestElement).innerHTML,
+            "<p>Legacy prompt</p><p><br></p><p>Second line</p>");
+        assert.equal((container.querySelector('[data-role="answer-editor"]') as TestElement).innerHTML,
+            "<p>Legacy answer</p>");
+    });
+
+    it("keeps local Item images visible in read-only authoring", async () => {
+        window.siyuan.config.readonly = true;
+        getAuthoringImpl = async (elementId) => ({ok: true, authoring: {
+            elementId,
+            prompt: '<p>Question<img src="assets/question.png"></p>',
+            answer: '<p>Answer<img src="assets/answer.png"></p>',
+            contentRevision: "rev-html-readonly",
+        }});
+        const {container, surface} = makeSurface({topicDomParser: parse5TopicDom});
+
+        await surface.mount(detail());
+
+        assert.equal(container.querySelector('[data-role="prompt-readonly"]')?.innerHTML,
+            '<p>Question<img src="assets/question.png"></p>');
+        assert.equal(container.querySelector('[data-role="answer-readonly"]')?.innerHTML,
+            '<p>Answer<img src="assets/answer.png"></p>');
+        assert.equal(container.querySelector('[data-action="insert-prompt-image"]'), null);
+    });
+
+    it("leaves Item HTML unchanged after upload failure and blocks contenteditable conflict drafts", async () => {
+        getAuthoringImpl = async (elementId) => ({ok: true, authoring: {
+            elementId,
+            prompt: "<p>Prompt</p>",
+            answer: "<p>Answer</p>",
+            contentRevision: "rev-html-conflict",
+        }});
+        const original = "<p>Prompt</p>";
+        const {container, surface} = makeSurface({
+            topicDomParser: parse5TopicDom,
+            uploadImages: async () => ({ok: false, kind: "response", selection: {}}),
+        });
+        await surface.mount(detail());
+        const editor = container.querySelector('[data-role="prompt-editor"]') as TestElement;
+        editor.dispatch("paste", {
+            clipboardData: {files: [new File(["image"], "failure.png", {type: "image/png"})]},
+            preventDefault() {},
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(editor.innerHTML, original);
+        assert.equal(container.querySelector('[data-role="status"]')?.textContent, "Image upload failed.");
+
+        editor.innerHTML = '<p>Local draft<img src="assets/local.png"></p>';
+        editor.dispatch("input");
+        saveItemImpl = async () => ({ok: false, failure: {
+            kind: "conflict", elementId: "item-id", changedField: "itemQA", currentRevision: "rev-html-current",
+        }});
+        assert.deepEqual(await surface.prepareTransition("tab-close"), {allowed: false, reason: "conflict"});
+        assert.equal(editor.innerHTML, '<p>Local draft<img src="assets/local.png"></p>');
+        assert.equal(editor.getAttribute("contenteditable"), "true");
+    });
+
+    it("disables both image pickers while a window barrier is active", async () => {
+        getAuthoringImpl = async (elementId) => ({ok: true, authoring: {
+            elementId,
+            prompt: "<p>Prompt</p>",
+            answer: "<p>Answer</p>",
+            contentRevision: "rev-html-barrier",
+        }});
+        const {container, surface} = makeSurface();
+        await surface.mount(detail());
+        surface.setWindowBarrier(true);
+
+        assert.equal(container.querySelector('[data-action="insert-prompt-image"]')?.getAttribute("disabled"), "disabled");
+        assert.equal(container.querySelector('[data-action="insert-answer-image"]')?.getAttribute("disabled"), "disabled");
     });
 
     it("renders semantic read-only Question and Answer sections with no editable controls or save", async () => {
