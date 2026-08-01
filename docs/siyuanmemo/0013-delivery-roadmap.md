@@ -81,10 +81,11 @@ No deferred command appears as a disabled placeholder. A later Feature owns both
 After Feature 008, subsequent Features proceed through these Product v1 tracks in dependency order rather than copying an older numbered build list:
 
 1. **Native Asset Intake (Feature 009)**: local image import for HTML Topics and both Item sides, plus the minimum `.sme` reference awareness required to keep shared assets safe.
-2. **Incremental Reading**: durable Read Point, selection extraction, child Topic split, richer Topic tools, and the processing workflow.
-3. **SiYuan Integration**: explicit block-to-Topic/Item commands, SendToNote, Element references and backlinks, plus the remaining asset and synchronization integration.
-4. **Browser And Lifecycle**: Element Browser views, Workset/subset learning, Inspector/Context, priority and ordering controls, and complete lifecycle actions.
-5. **Structural Editing**: rename, move, mixed sibling ordering, root/internal promotion or demotion, history snapshots, and recovery. Drag/drop remains a later enhancement unless a focused Feature explicitly adopts it.
+2. **SiYuanMemo UI Foundation**: shared Toolbar and toolbar contracts, command dispatch, menus, context menus, keyboard/focus behavior, responsive layout, theme states, and accessibility states. This track does not implement Incremental Reading semantics.
+3. **Incremental Reading**: durable Read Point, selection extraction, child Topic split, richer Topic tools, and the processing workflow.
+4. **SiYuan Integration**: explicit block-to-Topic/Item commands, SendToNote, Element references and backlinks, plus the remaining asset and synchronization integration.
+5. **Browser And Lifecycle**: Element Browser views, Workset/subset learning, Inspector/Context, priority and ordering controls, and complete lifecycle actions.
+6. **Structural Editing**: rename, move, mixed sibling ordering, root/internal promotion or demotion, history snapshots, and recovery. Drag/drop remains a later enhancement unless a focused Feature explicitly adopts it.
 
 This track order is provisional after Feature 008. Before starting each track, use current code and user workflow evidence to create a focused Feature specification. Product v1 acceptance remains the complete capability boundary recorded in `0006-element-browser-and-learning-gap-audit.md`, not the acceptance gate for any one Dogfood Alpha Feature.
 
